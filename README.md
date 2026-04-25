@@ -19,7 +19,7 @@
 
 | Stack | Status (as of 2026-04-25) | Where Mario got | What we learned |
 |---|---|---|---|
-| **SB3 PPO + reward shaping** *(active)* | Training, 1.5 M-step right-only run with `--normalize-reward`, milestone densification, hurdle bonuses. First eval at 25 k steps → Mario reached **x ≈ 698 / 3161 (22 %)**. Updated final number lives in [§9 Results](#9-results). | (will update at end of run) | A *small, well-normalised* reward function with a high entropy bonus is what unblocked PPO; an earlier 3-phase pipeline with `flag_bonus = 1500` policy-collapsed in 12 k steps. |
+| **SB3 PPO + reward shaping** *(overnight, in flight)* | 5 M-step run with `--gamma 0.9`, `--action-set simple`, `--action-bias-jump 1.0`, RND intrinsic reward (`--rnd-coef 0.3`), `--normalize-reward`, milestone+hurdle densification. Earlier 1.5 M-step runs *with the SB3-default `gamma 0.99`* hit a hard wall at the first pit (x = 698) — diagnosed and pivoted to lower discount in [§3](#3-the-ppo-recipe-that-works) and [§5.1](#51-ppo-reward--hyper-parameter-timeline). | (will update at end of run) | The right reward shape isn't enough on its own — for Mario, `gamma = 0.9` is a near-mandatory ingredient because the per-state value baseline otherwise absorbs all gradient signal. |
 | **DreamerV3 + Plan2Explore** *(parked, post-mortem)* | Three runs, **2 413 episodes total**, **0 flag-completions**. Best progress reached only ≈ x = 2 600 / 3 161. Diagnosis is in [§7 Failed Experiment](#7-failed-experiment-dreamerv3--plan2explore). | x ≈ 2 600 / 3 161 (≈ 82 %) | World-model + curiosity-driven exploration on sparse-reward NES Mario is *very* sample-inefficient. The reward head never saw a positive flag example, so the actor had no anchor for "what success looks like." This is the textbook Salimans-Chen failure mode that calls for imitation seeding (which we didn't have budget for — see lessons learned). |
 
 ---
@@ -34,17 +34,19 @@ py -3.11 -m venv .venv-gpu
 .\.venv-gpu\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# 2. Train the PPO baseline (1.5 M steps, ~3-5 h on RTX 4070-class GPU)
+# 2. Train the PPO baseline (overnight, 5 M steps, ~12-15 h on RTX 4070-class GPU)
 python train_mario.py `
-  --timesteps 1500000 --device cuda --action-set right_only `
-  --n-envs 8 --learning-rate 2.5e-4 --n-steps 512 --batch-size 256 `
-  --ent-coef 0.05 --n-epochs 4 --clip-range 0.1 `
+  --timesteps 5000000 --device cuda --action-set simple `
+  --n-envs 8 --gamma 0.9 --gae-lambda 0.95 `
+  --learning-rate 2.5e-4 --n-steps 512 --batch-size 256 `
+  --ent-coef 0.05 --n-epochs 4 --clip-range 0.2 `
   --normalize-reward --norm-reward-clip 10 `
-  --forward-reward-scale 0.1 --backward-penalty-scale 0.05 `
-  --flag-bonus 100 `
-  --milestone-step 100 --milestone-bonus 1.0 `
-  --hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 5.0 `
-  --eval-freq 25000 --eval-episodes 3 --preview-freq 50000
+  --forward-reward-scale 0.15 --backward-penalty-scale 0.05 `
+  --flag-bonus 200 --stall-steps 120 --stall-penalty 0 `
+  --milestone-step 50 --milestone-bonus 0.5 `
+  --hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 10 `
+  --action-bias-jump 1.0 --rnd-coef 0.3 `
+  --eval-freq 50000 --eval-episodes 3 --preview-freq 100000
 
 # 3. Watch live (one-shot or polling)
 .\watch_ppo.ps1                 # one-shot snapshot
@@ -103,27 +105,37 @@ re-tune. The original 3-phase `train_mario_professional.py` pipeline used
 KL went to 0, clip-fraction went to 0). The value head exploded on the giant
 flag bonus and drowned out the policy gradient.
 
-The fix was a *minimal* recipe, every choice motivated by a known PPO failure
-mode:
+**That fix was necessary but not sufficient.** Two further iterations
+(documented in [§5.1](#51-ppo-reward--hyper-parameter-timeline)) revealed
+that even with `flag_bonus=100` and `--normalize-reward`, the agent stalled
+at the **first pit (x ≈ 698)** for hundreds of thousands of steps. The
+deterministic eval policy converged on "die in the pit" because a small
+positive bag of rewards (1 hurdle bonus + a few milestones) made it a
+*locally optimal* terminal state. Two more changes broke through:
 
 | Knob | Value | Why |
 |---|---|---|
-| `--action-set right_only` | 5 actions instead of 7 | Smaller action space → easier exploration |
-| `--n-envs 8` | 8 parallel envs | Variance reduction; fits comfortably in 12 GB VRAM |
-| `--learning-rate 2.5e-4` | SB3/Atari default | Conservative; works with `--clip-range 0.1` |
+| `--action-set simple` | 7 actions (adds NOOP, A-only, left) | Right-only forces Mario to mix forward + jump, which made the "die in pit" policy too rewarded. Simple lets him stand still or back-jump. |
+| `--n-envs 8` | 8 parallel envs | Variance reduction; fits in 12 GB VRAM |
+| `--gamma 0.9` | **non-default**, lower than SB3's 0.99 | Mario rewards are myopic; a high discount makes the value function predict near-constant returns at every state, which kills advantages → kills policy gradient → policy never updates. The single most important hyper-parameter for PPO Mario. |
+| `--gae-lambda 0.95` | SB3 default | GAE smoothing |
+| `--learning-rate 2.5e-4` | SB3/Atari default | Conservative |
 | `--n-steps 512`, `--batch-size 256`, `--n-epochs 4` | OpenAI baselines style | Fewer epochs/rollout = less risk of policy collapse |
-| `--clip-range 0.1` | Tighter than default 0.2 | Prevents over-aggressive updates |
+| `--clip-range 0.2` | Default | Allows meaningful updates after the value baseline reset from `gamma=0.9` |
 | `--ent-coef 0.05` | 5× SB3 default | Keeps the policy from collapsing to argmax (the failure of run #1) |
 | `--normalize-reward --norm-reward-clip 10` | VecNormalize wrap | **Critical:** keeps value loss bounded so it never drowns out the policy gradient |
-| `--forward-reward-scale 0.1` | Small forward bonus | Densifies signal but doesn't dominate it |
-| `--flag-bonus 100` | One-time flag bonus, *not* 1500 | Combined with normalize-reward, this is large enough to be a clear positive anchor without exploding the value function |
-| `--milestone-step 100 --milestone-bonus 1.0` | +1.0 every 100 px of new max-x | Curriculum-style densification; prevents reward sparsity |
-| `--hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 5.0` | One-time bonus per hurdle crossed | Explicit credit assignment for landmark progress |
+| `--forward-reward-scale 0.15` | Small forward bonus | Densifies signal but doesn't dominate it |
+| `--flag-bonus 200` | One-time flag bonus, *not* 1500 | Large enough to anchor "the flag is good" without exploding the value head |
+| `--milestone-step 50 --milestone-bonus 0.5` | +0.5 every 50 px of new max-x | Curriculum-style densification at high resolution |
+| `--hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 10.0` | +10 the first time Mario crosses each landmark | Explicit credit-assignment beacons through the level |
+| `--action-bias-jump 1.0` | +1.0 logit bias on jump-containing actions at init | Solves the "Mario doesn't try jumping" problem in early exploration. PPO is free to learn it back. |
+| `--rnd-coef 0.3` | RND intrinsic-reward coefficient (Burda et al.) | Adds a curiosity bonus for novel screens — biases the agent past known walls without reshaping the extrinsic reward |
+| `--stall-penalty 0.0` | Disabled | A non-zero stall penalty discourages the cautious-but-correct "wait for the right moment to jump" pattern |
 
 The reward-engineering principle here is: *combine a dense, small, normalised
-shaping term with a discrete, one-time landmark bonus, and let `VecNormalize`
-keep everything in the right scale.* That formula is also what eventually
-worked for Kauten's well-known PPO Mario implementations (cited in §10).
+shaping term with a discrete, one-time landmark bonus, let `VecNormalize`
+keep the scale sane, **lower `gamma` so advantages aren't washed out**, and
+add an action-bias prior to break symmetry on the very first jump.*
 
 ---
 
@@ -132,20 +144,22 @@ worked for Kauten's well-known PPO Mario implementations (cited in §10).
 > Tested on Windows 11, Python 3.11 in `.venv-gpu`, NVIDIA RTX 4070 SUPER
 > (CUDA 12). Should work unchanged on any RTX-30/40 GPU.
 
-### PPO baseline (the recommended path)
+### PPO baseline (the recommended overnight path)
 
 ```powershell
 .\.venv-gpu\Scripts\Activate.ps1
 python train_mario.py `
-  --timesteps 1500000 --device cuda --action-set right_only `
-  --n-envs 8 --learning-rate 2.5e-4 --n-steps 512 --batch-size 256 `
-  --ent-coef 0.05 --n-epochs 4 --clip-range 0.1 `
+  --timesteps 5000000 --device cuda --action-set simple `
+  --n-envs 8 --gamma 0.9 --gae-lambda 0.95 `
+  --learning-rate 2.5e-4 --n-steps 512 --batch-size 256 `
+  --ent-coef 0.05 --n-epochs 4 --clip-range 0.2 `
   --normalize-reward --norm-reward-clip 10 `
-  --forward-reward-scale 0.1 --backward-penalty-scale 0.05 `
-  --flag-bonus 100 `
-  --milestone-step 100 --milestone-bonus 1.0 `
-  --hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 5.0 `
-  --eval-freq 25000 --eval-episodes 3 --preview-freq 50000
+  --forward-reward-scale 0.15 --backward-penalty-scale 0.05 `
+  --flag-bonus 200 --stall-steps 120 --stall-penalty 0 `
+  --milestone-step 50 --milestone-bonus 0.5 `
+  --hurdle-x 600 1200 1800 2400 3000 --hurdle-bonus 10 `
+  --action-bias-jump 1.0 --rnd-coef 0.3 `
+  --eval-freq 50000 --eval-episodes 3 --preview-freq 100000
 ```
 
 ### Detached background launch (Windows-specific)
@@ -197,9 +211,11 @@ that motivated each change. Every row has a corresponding commit in `git log`.
 | P1 | + `forward_reward_scale = 0.05 · max(0, Δx)` | NES built-in reward too sparse |
 | P2 | Use `Δ(max-x)` instead of `Δx`, clip ≥ 0 | Oscillation exploit (Mario wagged left/right at chokepoints to farm Δx) |
 | P3 | + `flag_bonus = 100` | Successful runs needed a positive terminal anchor |
-| P4 | + 3-phase staged pipeline (`train_mario_professional.py`) with `flag_bonus = 1500`, `n_epochs = 10` | More steps + curriculum should help |
-| P5 | **Reverted P4.** Switched to single-phase `train_mario.py` with `--normalize-reward`, `flag_bonus = 100`, `n_epochs = 4`, `ent_coef = 0.05`, `clip_range = 0.1` | P4 collapsed at 12 k steps (entropy → 0, KL → 0). Diagnosed as value-loss explosion drowning policy gradient. |
-| P6 (current) | + milestone bonus every 100 px, hurdle bonus at 600/1200/1800/2400/3000 | Densify the credit-assignment signal mid-level |
+| P4 | 3-phase staged pipeline (`train_mario_professional.py`) with `flag_bonus = 1500`, `n_epochs = 10` | More steps + curriculum should help |
+| P5 | **Reverted P4.** Single-phase `train_mario.py`, `--normalize-reward`, `flag_bonus = 100`, `n_epochs = 4`, `ent_coef = 0.05`, `clip_range = 0.1` | P4 collapsed at 12 k steps (entropy → 0, KL → 0). Value-loss explosion drowned policy gradient. |
+| P6 | + milestone bonus every 100 px, hurdle bonus at 600/1200/1800/2400/3000 | Densify the mid-level signal |
+| P7 | Healthy training metrics, **but stuck at first pit (x = 698) for 150 k steps**. Eval policy converged on "die in pit, locally rewarded by hurdle/milestone/NES timer". Tried more entropy + RND + simple action set + jump-action bias. | Same wall — small bag of positive rewards before pit makes the local optimum sticky. |
+| **P8 (current overnight)** | **`--gamma 0.9` (down from 0.99)** + simple actions + `--action-bias-jump 1.0` + `--rnd-coef 0.3` + 5 M-step horizon | At γ = 0.99 the value baseline absorbs every advantage signal (constant per-state predicted return), so PPO has no gradient direction. γ = 0.9 + RND + jump prior is the canonical "PPO clears Mario" recipe. |
 
 ### 5.2 DreamerV3 reward + algorithm timeline
 
@@ -399,16 +415,19 @@ See §7.3.
 > Numbers are taken directly from `metrics.jsonl` and the on-disk
 > `train_eps/`, `eval_eps/` for each run. Updated as runs complete.
 
-### 9.1 PPO (current run, in flight)
+### 9.1 PPO
 
-Run dir: `runs/ppo_safe_20260425_012556/`. Pinned hypers: see §3.
+Three short attempts during initial tuning (all 8-env, RTX 4070 SUPER, ≈ 90 fps):
 
-| Step | best_remaining_distance | Mario reached x | % of level | Notes |
+| Run | Hypers (highlights) | Steps reached | Best max-x | Outcome |
 |---|---|---|---|---|
-| 25 000 | 2 463 px | 698 / 3 161 | 22 % | First eval after warm-up |
-| (... will be filled in as evals complete; final number lands here ...) | | | | |
+| `ppo_safe_20260425_012556` (P5–P6) | right_only, gamma=0.99, ent=0.05, clip=0.1, normalize_reward, flag=100 | 150 k | 698 (22 %) | Stuck at pit 1 |
+| `ppo_safe_20260425_015708` (P7) | simple, gamma=0.99, ent=0.1, RND=0.3, action_bias_jump=1.0 | 50 k | 698 (22 %) | Stuck at pit 1 |
+| **`ppo_overnight_20260425_021341` (P8 — overnight in flight)** | **simple, gamma=0.9, ent=0.05, RND=0.3, action_bias_jump=1.0, 5 M steps** | (in flight) | (in flight) | (will update with final eval table + success GIF when overnight run finishes) |
 
-The success-clip GIF and final eval table land here when the run finishes.
+The success-clip MP4/GIF and final eval table land here when the overnight
+run finishes; preview videos are written every 100 k steps to
+`runs/ppo_overnight_20260425_021341/run/previews/`.
 
 ### 9.2 DreamerV3 (parked)
 

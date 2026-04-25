@@ -78,6 +78,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.99,
+        help="Discount factor. Mario benefits from a lower gamma (~0.9) so the value "
+             "function distinguishes 'about to die in pit' from 'past the pit'.",
+    )
+    parser.add_argument(
+        "--gae-lambda",
+        type=float,
+        default=0.95,
+        help="GAE lambda for advantage estimation.",
+    )
+    parser.add_argument(
         "--target-kl",
         type=float,
         default=-1.0,
@@ -215,6 +228,8 @@ def resume_custom_objects(args: argparse.Namespace) -> dict[str, float | int | N
         "clip_range": args.clip_range,
         "vf_coef": args.vf_coef,
         "max_grad_norm": args.max_grad_norm,
+        "gamma": args.gamma,
+        "gae_lambda": args.gae_lambda,
     }
     custom["target_kl"] = args.target_kl if args.target_kl > 0 else None
     return custom
@@ -360,6 +375,8 @@ def main() -> None:
             clip_range=args.clip_range,
             vf_coef=args.vf_coef,
             max_grad_norm=args.max_grad_norm,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
             target_kl=args.target_kl if args.target_kl > 0 else None,
             tensorboard_log=str(logs_dir / "tensorboard"),
             device=resolved_device,

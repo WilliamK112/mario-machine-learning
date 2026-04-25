@@ -12,11 +12,16 @@ param(
 )
 
 function Get-LatestRunDir {
+  # Select the newest run directory by the timestamp encoded in its name
+  # (NOT by file mtime, because old runs can have late writes during shutdown).
   $candidates = @()
   $candidates += Get-ChildItem 'C:\Users\31660\mario-rl\runs' -Directory -ErrorAction SilentlyContinue `
-    | Where-Object { $_.Name -like 'ppo_safe_*' -or $_.Name -like 'professional*' }
+    | Where-Object { $_.Name -match '^ppo_(safe|overnight|professional|.+)_(\d{8}_\d{6})' }
   if (-not $candidates) { return $null }
-  ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+  $best = $candidates | Sort-Object {
+    if ($_.Name -match '_(\d{8}_\d{6})$') { $matches[1] } else { '0' }
+  } -Descending | Select-Object -First 1
+  $best.FullName
 }
 
 function Show-Snapshot {
