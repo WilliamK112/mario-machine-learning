@@ -52,8 +52,13 @@ python train_mario.py `
 .\watch_ppo.ps1                 # one-shot snapshot
 .\watch_ppo.ps1 -Loop -EveryS 30  # auto-poll every 30 s
 
-# 4. Render the trained agent playing Mario 1-1
-python evaluate_mario.py --model runs\<latest>\models\mario_final.zip
+# 4. (Optional, while training is in flight) See what the policy is *actually* doing.
+#    PPO's deterministic eval is a lagging indicator — the stochastic policy
+#    often clears pits well before the argmax does.
+.\diagnose_latest.ps1 -Seeds 5 -MaxSteps 1200
+
+# 5. Render the trained agent playing Mario 1-1 (best of N seeds, best.mp4)
+python render_best_checkpoint.py --auto --seeds 5 --gif
 ```
 
 ---
@@ -70,6 +75,8 @@ mario-rl/
 ├── evaluate_mario.py               # SB3 evaluator → mp4 + json summary
 ├── rnd.py                          # Random Network Distillation intrinsic-reward module
 ├── watch_ppo.ps1                   # One-shot / polling health snapshot for the active PPO run
+├── diagnose_latest.ps1             # CPU rollout of the latest checkpoint (stochastic + deterministic)
+├── render_best_checkpoint.py       # Multi-seed render of any checkpoint → best.mp4 / best.gif
 ├── run_mario.ps1                   # PowerShell front-door: train | eval
 ├── auto_update_mario_monitor.py    # TensorBoard-style live reward/length plot
 ├── quick_mario_smoke.py            # 30-second sanity check on the env wrapper
