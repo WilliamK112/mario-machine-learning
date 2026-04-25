@@ -13,6 +13,15 @@
 > each decision — **and the negative results**, with the diagnostic evidence
 > that led to them.
 
+![Mario PPO Training Pipeline](docs/mario_ppo_training_pipeline.png)
+
+> *The PPO training pipeline at a glance — 8 parallel envs, 5-layer wrapper
+> stack, custom reward shaping (`FastClearRewardWrapper`), small CNN
+> policy/value network, action-bias jump prior, RND intrinsic reward, and
+> the discount-factor (`gamma=0.9`) fix that finally broke the agent past the
+> first pit. See [§3 The PPO Recipe That Works](#3-the-ppo-recipe-that-works)
+> for the full per-knob justification.*
+
 ---
 
 ## 0. TL;DR
