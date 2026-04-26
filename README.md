@@ -39,9 +39,13 @@
 **Right — `ppo_efficient_timepen_*` (~8.45 M env-steps)**  
 terminal `mario_final.zip` (time-penalty fine-tune)
 
-<video src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4" width="340" controls playsinline preload="metadata"></video>
+GitHub README **does not show** `<video>` reliably, so this column uses a **still poster** (click → opens the full **MP4** in the browser or player).
 
-[download MP4](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4)
+<a href="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4" title="Open full MP4 (~15 fps)">
+<img src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run_poster.jpg" alt="Still from shortest flag-clear MP4 (~8.45M policy)" width="340" />
+</a>
+
+[download / open MP4](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4)
 
 </td>
 </tr>
@@ -58,7 +62,7 @@ terminal `mario_final.zip` (time-penalty fine-tune)
 | **Env steps to `flag_get`** | **310** | **291** |
 | **File playback (export)** | GIF: **156** frames @ **8 fps**, **≤256 px** wide → **~19.5 s** (subsampled from source 311 f @ 15 fps, **~20.7 s**) | **292** frames @ **15 fps** → **~19.47 s** |
 
-*Notes:* **Env steps** = `env.step` count to the flag (includes inner `frame_skip`). **Playback** = media file duration, not the NES in-game clock. If the inline **video** does not load on GitHub, use the download link or open the raw URL in VLC.
+*Notes:* **Env steps** = `env.step` count to the flag (includes inner `frame_skip`). **Playback** = media file duration, not the NES in-game clock. The **right** preview image is a single frame from the MP4 (near the flag); the full run is the linked **MP4** only.
 
 ---
 
