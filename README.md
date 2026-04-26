@@ -33,9 +33,9 @@
 
 ## 0. TL;DR
 
-| Stack | Status (as of 2026-04-25) | Where Mario got | What we learned |
+| Stack | Status (baseline **2026-04-25** + follow-ups **through 2026-04-26**) | Where Mario got | What we learned |
 |---|---|---|---|
-| **SB3 PPO + reward shaping** | 5 M env-step run (`ppo_overnight_20260425_021341`, P8) with `--gamma 0.9`, `--action-set simple`, `--action-bias-jump 1.0`, RND (`--rnd-coef 0.3`), `--normalize-reward`, milestone+hurdle densification. Earlier runs with default `gamma 0.99` stalled at pit 1 (x ~ 698) — see [§3](#3-the-ppo-recipe-that-works), [§5.1](#51-ppo-reward--hyper-parameter-timeline), and the **all-time PPO / Dreamer progress table in [§9.0](#90-all-time-best-progress--sample-efficiency-snapshot)**. | *Snapshot 2026-04-25:* best deterministic eval `x` **2 146** (2.6 M steps); best stochastic side-car `x` **2 471** (3.3 M). **No** `flag_get` in eval so far. | The right reward shape isn't enough on its own: for Mario, `gamma = 0.9` is near-mandatory because a high `gamma` value baseline can absorb the advantage signal. |
+| **SB3 PPO + reward shaping** | **P8** overnight (`ppo_overnight_20260425_021341`, 5 M target): same recipe as [§3](#3-the-ppo-recipe-that-works). **Follow-ups:** `ppo_resume2m_*` (+2 M from P8 `mario_final`, `ent_coef=0.02`); `ppo_efficient_timepen_*` (+1.5 M from a mid-run `best_eval` with `--time-penalty-per-step 0.02`). Full table: [§9.0](#90-all-time-best-progress--sample-efficiency-snapshot), run log: [§9.1](#91-ppo). | **P8-era deterministic eval (3 ep, argmax):** best `x` **2 146** @ ~2.6 M steps. **P8 stochastic side-car:** `x` **2 471** @ ~3.3 M. **Later PPO:** `flag_get` on 1-1 to **`x = 3 161`** in eval and in rendered rollouts; **deterministic eval is volatile** (often **2/3** at terminal `mario_final`, **3/3** at a saved `best_eval` peak ~8.05 M on the SB3 counter). Stochastic video / multi-seed search clears reliably. | The right reward shape isn't enough on its own: for Mario, `gamma = 0.9` is near-mandatory because a high `gamma` value baseline can absorb the advantage signal. Extra env-steps + mild per-step time cost can shorten clears but **checkpoint selection matters** (do not assume the last `mario_final` is the best policy). |
 | **DreamerV3 + Plan2Explore** *(parked, post-mortem)* | Three runs, **2 413 episodes total**, **0 flag-completions**. Best progress reached only ≈ x = 2 600 / 3 161. Diagnosis is in [§7 Failed Experiment](#7-failed-experiment-dreamerv3--plan2explore). | x ≈ 2 600 / 3 161 (≈ 82 %) | World-model + curiosity-driven exploration on sparse-reward NES Mario is *very* sample-inefficient. The reward head never saw a positive flag example, so the actor had no anchor for "what success looks like." This is the textbook Salimans-Chen failure mode that calls for imitation seeding (which we didn't have budget for — see lessons learned). |
 
 ---
@@ -82,7 +82,7 @@ python render_best_checkpoint.py --auto --seeds 5 --gif
 ## 2. Repository Structure
 
 ```
-mario-rl/
+mario-machine-learning/
 ├── README.md                       # this document
 ├── requirements.txt                # pinned deps for both stacks
 ├── mario_runtime.py                # NES wrapper, reward shaping, Monitor/VecEnv plumbing
@@ -156,6 +156,7 @@ positive bag of rewards (1 hurdle bonus + a few milestones) made it a
 | `--action-bias-jump 1.0` | +1.0 logit bias on jump-containing actions at init | Solves the "Mario doesn't try jumping" problem in early exploration. PPO is free to learn it back. |
 | `--rnd-coef 0.3` | RND intrinsic-reward coefficient (Burda et al.) | Adds a curiosity bonus for novel screens — biases the agent past known walls without reshaping the extrinsic reward |
 | `--stall-penalty 0.0` | Disabled | A non-zero stall penalty discourages the cautious-but-correct "wait for the right moment to jump" pattern |
+| `--time-penalty-per-step 0.0` | Default off; e.g. `0.02` for fine-tunes | In `FastClearRewardWrapper`, subtract this **every agent step** after other shaping. Encourages shorter episodes when paired with flag / forward shaping (see `ppo_efficient_timepen_*` in §9.1). |
 
 The reward-engineering principle here is: *combine a dense, small, normalised
 shaping term with a discrete, one-time landmark bonus, let `VecNormalize`
@@ -240,7 +241,9 @@ that motivated each change. Every row has a corresponding commit in `git log`.
 | P5 | **Reverted P4.** Single-phase `train_mario.py`, `--normalize-reward`, `flag_bonus = 100`, `n_epochs = 4`, `ent_coef = 0.05`, `clip_range = 0.1` | P4 collapsed at 12 k steps (entropy → 0, KL → 0). Value-loss explosion drowned policy gradient. |
 | P6 | + milestone bonus every 100 px, hurdle bonus at 600/1200/1800/2400/3000 | Densify the mid-level signal |
 | P7 | Healthy training metrics, **but stuck at first pit (x = 698) for 150 k steps**. Eval policy converged on "die in pit, locally rewarded by hurdle/milestone/NES timer". Tried more entropy + RND + simple action set + jump-action bias. | Same wall — small bag of positive rewards before pit makes the local optimum sticky. |
-| **P8 (current overnight)** | **`--gamma 0.9` (down from 0.99)** + simple actions + `--action-bias-jump 1.0` + `--rnd-coef 0.3` + 5 M-step horizon | At γ = 0.99 the value baseline absorbs every advantage signal (constant per-state predicted return), so PPO has no gradient direction. γ = 0.9 + RND + jump prior is the canonical "PPO clears Mario" recipe. |
+| **P8 (overnight baseline)** | **`--gamma 0.9` (down from 0.99)** + simple actions + `--action-bias-jump 1.0` + `--rnd-coef 0.3` + 5 M-step horizon | At γ = 0.99 the value baseline absorbs every advantage signal (constant per-state predicted return), so PPO has no gradient direction. γ = 0.9 + RND + jump prior is the canonical "PPO clears Mario" recipe. |
+| **P9** | Resume P8 `mario_final` + **+2 M** steps, `ent_coef = 0.02`, same env recipe, `VecNormalize` reloaded (`ppo_resume2m_*`) | Lower entropy continuation without overwriting the overnight run tree. |
+| **P10** | Resume **`evaluations/best_eval.zip`** from P9 + **`--time-penalty-per-step 0.02`** + **+1.5 M** (`ppo_efficient_timepen_*`) | Per-step cost biases shorter clears; **peak deterministic eval** hit **3/3** `flag_get` (checkpoint ~8.05 M on SB3 counter). **RND predictor still re-inits each process** — intrinsic signal is not carried in the `.zip`. |
 
 ### 5.2 DreamerV3 reward + algorithm timeline
 
@@ -388,8 +391,10 @@ Three compounding factors:
 ### 7.5 Honest engineering call
 
 We made the call to **stop iterating on DreamerV3 and ship the PPO baseline**
-because (a) PPO has a plausible 1.5 M-step path to a confirmed flag-clear,
-and (b) the next DreamerV3 fix (imitation seeding) is a research-grade
+because (a) PPO **did** reach confirmed `flag_get` on 1-1 after the P8 recipe
+plus further training and fine-tuning (see §9.1), even though deterministic
+eval at the **last** saved weights is still a noisy readout, and (b) the next
+DreamerV3 fix (imitation seeding) is a research-grade
 project on its own, not a one-evening tune. The DreamerV3 code, configs,
 and post-mortem stay in the repo because the exercise of *diagnosing why
 the fancy agent failed* is itself a useful artifact.
@@ -453,24 +458,28 @@ comparable** across PPO, DreamerV3, and side-car diagnostics.
 | **DreamerV3** `mario_run3_rescue` | Greedy / eval episodes (§7) | **~2 600** | 82.3% | 561 | n/a (0 flags; see §7) |
 | **P8 PPO** `ppo_overnight_*` | **Deterministic** eval, 3 episodes, `eval_steps=4000` (argmax) | **2 146** (at `2.6 M` env steps) | 67.9% | 1 015 | First `x >= 724`: **250 k** (pit 1); first `x >= 1 500`: **1.3 M**; first `x >= 2 000`: **1.4 M** |
 | **P8 PPO** same run | **Stochastic** 3-seed **quick** rollouts, `max_steps=1500` (CPU: `auto_diagnose.ps1` -> `auto_diagnose.csv`) | **2 471** (at `3.3 M` env steps) | 78.2% | 690 | n/a (stochastic: different eval protocol) |
+| **PPO follow-up** `ppo_resume2m_*` | Training / eval / render (protocol varies); goal line `3161` | **3 161** | 100% | 0 | n/a (continued from ~5 M counter) |
+| **PPO + time penalty** `ppo_efficient_timepen_*` | **Deterministic** eval, **3 ep**, at **saved** `evaluations/best_eval.zip` (SB3 counter ~**8.05 M**) | **3 161** | 100% | 0 | n/a |
 | *Early P5–P7 PPO* | `gamma=0.99` attempts | 698 (plateau) | 22% | 2 463 | **0** further progress without `gamma` fix |
 
 *Notes.*
 
-1. The **P8 deterministic** all-time high (`2 146` px) and the 250 k / 1.3 M /
+1. The **P8** rows (**2 146** / **2 471**) are a **2026-04-25 milestone snapshot** on `ppo_overnight_*` only. They do **not** include later resume / fine-tune runs; see the **follow-up** rows above and [§9.1](#91-ppo).
+2. The **P8 deterministic** all-time high (`2 146` px) and the 250 k / 1.3 M /
    1.4 M *first-hit* points come from on-disk
    `runs/ppo_overnight_*/run/evaluations/step_*/summary.json`. The *stochastic* peak
    `2 471` is from the 3-seed side-car probe (higher `x` but a different
    eval protocol, shorter horizon). Policy still oscillates; the argmax
    line is a **conservative, HR-friendly** read on what the best greedy
-   policy *has* achieved to date.
-2. `eval` episodes are **capped** at 4 000 env steps, so a run that
+   policy *had* achieved **at that stage** of training.
+3. `eval` episodes are **capped** at 4 000 env steps, so a run that
    *could* have walked further in principle is still truncated
    (success metric is *progress*, not wall-clock in-game time).
-3. *Sample efficiency* is reported as the **earliest** training
+4. *Sample efficiency* is reported as the **earliest** training
    *environment-step* count at which the *deterministic* on-policy eval
    first crossed each milestone; all three P5–P7 runs are omitted because
    they never left `x ~ 698` with `gamma = 0.99` (value baseline collapse).
+5. **Terminal vs best checkpoint:** SB3 `learn()` may end on weights that **underperform** an earlier `best_eval.zip` on the same run. Report both when discussing `flag_get` and step counts.
 
 `auto_diagnose` is optional (PowerShell) - it writes one CSV line per
 new `mario_ppo_*_steps.zip` checkpoint, **does not** touch the main GPU
@@ -478,17 +487,17 @@ trainer, and (when `best_x >= 2500` or a flag) triggers a full `render_best_chec
 
 ### 9.1 PPO
 
-Three short attempts during initial tuning (all 8-env, RTX 4070 SUPER, ≈ 90 fps), plus the long P8 run:
+Three short attempts during initial tuning (all 8-env, RTX 4070 SUPER, ≈ 90 fps), the **P8** overnight run, and **P9 / P10** follow-ups (resume + time-penalty fine-tune):
 
 | Run | Hypers (highlights) | Steps reached | Best max-x | Outcome |
 |---|---|---|---|---|
 | `ppo_safe_20260425_012556` (P5–P6) | right_only, gamma=0.99, ent=0.05, clip=0.1, normalize_reward, flag=100 | 150 k | 698 (22 %) | Stuck at pit 1 |
 | `ppo_safe_20260425_015708` (P7) | simple, gamma=0.99, ent=0.1, RND=0.3, action_bias_jump=1.0 | 50 k | 698 (22 %) | Stuck at pit 1 |
-| **`ppo_overnight_20260425_021341` (P8 — 5 M env-step target)** | **simple, gamma=0.9, ent=0.05, RND=0.3, action_bias_jump=1.0** | *≈ 3.8 M* / 5 M *(snapshot 2026-04-25; see `train.out.log`)* | **2 146** (best single deterministic eval) | *No `flag_get` in eval yet* — §9.0 has full leaderboard |
+| **`ppo_overnight_20260425_021341` (P8 — 5 M env-step target)** | **simple, gamma=0.9, ent=0.05, RND=0.3, action_bias_jump=1.0** | **5 M** completed | **2 146** (best **deterministic** eval on this run through ~3.8 M logged in §9.0 snapshot) | **Eval `flag_get`:** not observed on P8 **through the 2026-04-25 snapshot**; later training (P9+) reaches the flag. |
+| **`ppo_resume2m_ent002_*` (P9)** | P8 recipe + resume `mario_final`, **+2 M**, `ent_coef=0.02` | ~**7.0 M** SB3 counter | **3 161** | `flag_get` in eval sweeps / stochastic; deterministic eval **volatile** at run end. |
+| **`ppo_efficient_timepen_*` (P10)** | Resume **`best_eval`** + **`--time-penalty-per-step 0.02`**, **+1.5 M** | ~**8.45 M** SB3 counter | **3 161** | **Peak** saved `best_eval`: **deterministic 3/3** clears, shortest clear **~305** env steps (that checkpoint). Terminal **`mario_final`** eval can regress (e.g. **2/3**). |
 
-The success-clip MP4/GIF land here if / when a run clears the flag; preview
-videos are written every 100 k steps to
-`runs/ppo_overnight_20260425_021341/run/previews/`.
+Curated **flag** demos for the README live under `docs/` (see top of this file). Per-run **training previews** still land under each `runs/.../previews/` (e.g. P8: `runs/ppo_overnight_20260425_021341/run/previews/`).
 
 ### 9.2 DreamerV3 (parked)
 
