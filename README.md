@@ -26,6 +26,9 @@
 
 > *Single rollout from the resumed PPO checkpoint (`mario_final.zip`, ~7 M env-steps). Rendered with `render_best_checkpoint.py --rank-by fastest_clear` (stochastic policy, one episode to the flag). Source MP4 ≈ 20 s at 15 fps; GIF is width-downscaled and frame-subsampled for the README.*
 
+**Shortest flag-clear run (MP4, after time-penalty fine-tune, ~20 s @ 15 fps):**  
+[open video](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) — if the browser does not play inline, right-click → save as, or paste the URL in VLC.
+
 ---
 
 ## 0. TL;DR
@@ -114,7 +117,7 @@ mario-rl/
 `logs/`, `runs/`, virtualenvs, `*.npz`, `*.pt`, `*.zip`, `*.mp4`, `*.gif`
 are intentionally `.gitignore`d — they are reproducible from the configs and
 would balloon the repo to multiple gigabytes. One exception is checked in:
-`docs/mario_ppo_flag_run.gif` (README demo).
+`docs/mario_ppo_flag_run.gif` and `docs/mario_ppo_shortest_flag_run.mp4` (README demos).
 
 ---
 

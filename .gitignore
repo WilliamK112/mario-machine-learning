@@ -54,6 +54,7 @@ previews/
 *.gif
 !docs/mario_ppo_flag_run.gif
 *.mp4
+!docs/mario_ppo_shortest_flag_run.mp4
 *.mkv
 *.avi
 
