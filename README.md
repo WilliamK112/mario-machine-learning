@@ -39,10 +39,10 @@
 **Right — `ppo_efficient_timepen_*` (~8.45 M env-steps)**  
 terminal `mario_final.zip` (time-penalty fine-tune)
 
-GitHub README **does not show** `<video>` reliably, so this column uses a **still poster** (click → opens the full **MP4** in the browser or player).
+GitHub README **does not show** `<video>` reliably, so this column uses an **animated GIF** (downscaled + ~8 fps, same idea as the left column). **Click the GIF** for the full **15 fps MP4**.
 
-<a href="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4" title="Open full MP4 (~15 fps)">
-<img src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run_poster.jpg" alt="Still from shortest flag-clear MP4 (~8.45M policy)" width="340" />
+<a href="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4" title="Open full MP4 (15 fps)">
+<img src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.gif" alt="Shortest flag-clear run (~8.45M policy), GIF preview" width="340" />
 </a>
 
 [download / open MP4](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4)
@@ -55,14 +55,14 @@ GitHub README **does not show** `<video>` reliably, so this column uses a **stil
 
 | | **Left (GIF)** | **Right (MP4)** |
 |---|---|---|
-| **Asset** | [`mario_ppo_flag_run.gif`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif) | [`mario_ppo_shortest_flag_run.mp4`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) |
+| **Asset** | [`mario_ppo_flag_run.gif`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif) | [`mario_ppo_shortest_flag_run.gif`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.gif) (README preview) · [`mario_ppo_shortest_flag_run.mp4`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) (full) |
 | **Approx. training `num_timesteps`** | **~7.01 M** | **~8.45 M** |
 | **Candidate rollouts (stochastic)** | **64** | **64** |
 | **Winning seed** | **2** | **60** |
 | **Env steps to `flag_get`** | **310** | **291** |
-| **File playback (export)** | GIF: **156** frames @ **8 fps**, **≤256 px** wide → **~19.5 s** (subsampled from source 311 f @ 15 fps, **~20.7 s**) | **292** frames @ **15 fps** → **~19.47 s** |
+| **File playback (export)** | GIF: **156** frames @ **8 fps**, **≤256 px** wide → **~19.5 s** (subsampled from source 311 f @ 15 fps, **~20.7 s**) | MP4: **292** frames @ **15 fps** → **~19.47 s**. README GIF: **146** frames @ ~**8 fps**, **≤256 px** → **~19.4 s**. |
 
-*Notes:* **Env steps** = `env.step` count to the flag (includes inner `frame_skip`). **Playback** = media file duration, not the NES in-game clock. The **right** preview image is a single frame from the MP4 (near the flag); the full run is the linked **MP4** only.
+*Notes:* **Env steps** = `env.step` count to the flag (includes inner `frame_skip`). **Playback** = media file duration, not the NES in-game clock. The **right** GIF is a **subsampled** preview of the MP4 (**146** frames @ ~**7.5–8 fps**, **≤256 px** wide); full quality is the linked **MP4** (**292** frames @ **15 fps**).
 
 ---
 
