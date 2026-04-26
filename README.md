@@ -26,7 +26,7 @@
 
 > *Single rollout from the resumed PPO checkpoint (`mario_final.zip`, ~7 M env-steps). Rendered with `render_best_checkpoint.py --rank-by fastest_clear` (stochastic policy, one episode to the flag). Source MP4 ≈ 20 s at 15 fps; GIF is width-downscaled and frame-subsampled for the README.*
 
-**Shortest flag-clear run (MP4, after time-penalty fine-tune, ~20 s @ 15 fps):**  
+**Shortest flag-clear run (MP4):** policy is **`mario_final.zip`** from the completed time-penalty run (`ppo_efficient_timepen`, ~8.45 M env-steps — **not** the mid-run `best_eval`). Render: `render_best_checkpoint.py --rank-by fastest_clear`, stochastic, best of 64 seeds (shortest episode **291** steps, **~19.5 s** @ 15 fps).  
 [open video](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) — if the browser does not play inline, right-click → save as, or paste the URL in VLC.
 
 ---
