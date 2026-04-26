@@ -113,7 +113,8 @@ mario-rl/
 
 `logs/`, `runs/`, virtualenvs, `*.npz`, `*.pt`, `*.zip`, `*.mp4`, `*.gif`
 are intentionally `.gitignore`d — they are reproducible from the configs and
-would balloon the repo to multiple gigabytes.
+would balloon the repo to multiple gigabytes. One exception is checked in:
+`docs/mario_ppo_flag_run.gif` (README demo).
 
 ---
 
