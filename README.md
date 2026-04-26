@@ -22,7 +22,7 @@
 > first pit. See [§3 The PPO Recipe That Works](#3-the-ppo-recipe-that-works)
 > for the full per-knob justification.*
 
-![PPO clearing Super Mario Bros 1-1 (flag)](docs/mario_ppo_flag_run.gif)
+![PPO clearing Super Mario Bros 1-1 (flag)](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif)
 
 > *Single rollout from the resumed PPO checkpoint (`mario_final.zip`, ~7 M env-steps). Rendered with `render_best_checkpoint.py --rank-by fastest_clear` (stochastic policy, one episode to the flag). Source MP4 ≈ 20 s at 15 fps; GIF is width-downscaled and frame-subsampled for the README.*
 
@@ -41,8 +41,8 @@
 
 ```powershell
 # 1. Clone & set up the GPU virtualenv (one-time)
-git clone https://github.com/<you>/mario-rl.git
-cd mario-rl
+git clone https://github.com/WilliamK112/mario-machine-learning.git
+cd mario-machine-learning
 py -3.11 -m venv .venv-gpu
 .\.venv-gpu\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -192,10 +192,10 @@ the NES emulator abort when the parent console closes. Always launch with
 `Start-Process -WindowStyle Hidden`:
 
 ```powershell
-$python = "C:\Users\<you>\mario-rl\.venv-gpu\Scripts\python.exe"
+$python = "C:\path\to\mario-machine-learning\.venv-gpu\Scripts\python.exe"
 Start-Process -FilePath $python `
   -ArgumentList "-u","train_mario.py","--timesteps","1500000", "...rest..." `
-  -WorkingDirectory "C:\Users\<you>\mario-rl" `
+  -WorkingDirectory "C:\path\to\mario-machine-learning" `
   -RedirectStandardOutput "runs\train.out.log" `
   -RedirectStandardError  "runs\train.err.log" `
   -WindowStyle Hidden
