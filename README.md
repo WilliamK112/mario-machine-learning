@@ -22,21 +22,43 @@
 > first pit. See [§3 The PPO Recipe That Works](#3-the-ppo-recipe-that-works)
 > for the full per-knob justification.*
 
-![PPO clearing Super Mario Bros 1-1 (flag)](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif)
+### Flag-clear comparison (same render recipe)
 
-> *Single rollout from the resumed PPO checkpoint (`mario_final.zip`, ~7 M env-steps). Rendered with `render_best_checkpoint.py --rank-by fastest_clear` (stochastic policy, one episode to the flag). Source MP4 ≈ 20 s at 15 fps; GIF is width-downscaled and frame-subsampled for the README.*
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
 
-**Shortest flag-clear run (MP4):** policy is **`mario_final.zip`** from the completed time-penalty run (`ppo_efficient_timepen`, ~8.45 M env-steps — **not** the mid-run `best_eval`). Render: `render_best_checkpoint.py --rank-by fastest_clear`, stochastic, best of 64 seeds (shortest episode **291** steps, **~19.5 s** @ 15 fps).  
-[open video](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) — if the browser does not play inline, right-click → save as, or paste the URL in VLC.
+**Left — `ppo_resume2m_*` (~7.01 M env-steps)**  
+`mario_final.zip` after the +2 M resume
 
-**Side-by-side demo stats (fair comparison setup).** Both episodes were chosen with the **same script and ranking**: `render_best_checkpoint.py --policy-modes stochastic --rank-by fastest_clear --max-steps 4000 --fps 15`, then **64** candidate rollouts (`--seeds 64 --seed-base 0`). The **only** intentional difference below is **which `mario_final.zip`** was loaded (different training runs). The GIF file is **re-encoded** (smaller resolution + lower frame rate) for the README; timing for the GIF row includes that second pass.
+<img src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif" alt="PPO flag clear ~7M policy" width="340" />
 
-| Demo in README | Policy weights (`mario_final.zip` from) | Approx. SB3 **training** `num_timesteps` | **Candidate rollouts** (stochastic tries) | **Winning seed** | **Env steps** to `flag_get` | **Recorded** playback (export pipeline) |
-|---|---|---:|---:|---:|---:|---|
-| **GIF** [`mario_ppo_flag_run.gif`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif) | `ppo_resume2m_ent002_*` (resume after P8, +2 M segment) | **~7.01 M** | **64** | **2** | **310** | **Source MP4:** 311 frames @ **15 fps** → **~20.7 s**. **GIF:** subsample to **8 fps**, max width **256 px**, **156** frames → **~19.5 s** at native GIF timing. |
-| **MP4** [`mario_ppo_shortest_flag_run.mp4`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) | `ppo_efficient_timepen_*` (P10: time-penalty fine-tune, terminal save) | **~8.45 M** | **64** | **60** | **291** | **292** frames @ **15 fps** → **~19.47 s** (committed file = this export). |
+</td>
+<td width="50%" align="center" valign="top">
 
-*Interpretation:* **291 vs 310** are **env `step()` counts** (includes `frame_skip` inside the env); lower means a shorter decision sequence to the flag for that batch of 64 seeds. **Wall-clock** in the table is **player file duration**, not NES internal timer. For reproducibility, re-run the same `render_best_checkpoint.py` line against the matching `.zip` under `runs/` (paths are also stored in each run’s `best.json` next to `best.mp4`).
+**Right — `ppo_efficient_timepen_*` (~8.45 M env-steps)**  
+terminal `mario_final.zip` (time-penalty fine-tune)
+
+<video src="https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4" width="340" controls playsinline preload="metadata"></video>
+
+[download MP4](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4)
+
+</td>
+</tr>
+</table>
+
+**Parallel stats (apples-to-apples).** Same pipeline for both: `render_best_checkpoint.py --policy-modes stochastic --rank-by fastest_clear --max-steps 4000 --fps 15 --seeds 64 --seed-base 0`. Only the loaded checkpoint differs.
+
+| | **Left (GIF)** | **Right (MP4)** |
+|---|---|---|
+| **Asset** | [`mario_ppo_flag_run.gif`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_flag_run.gif) | [`mario_ppo_shortest_flag_run.mp4`](https://raw.githubusercontent.com/WilliamK112/mario-machine-learning/main/docs/mario_ppo_shortest_flag_run.mp4) |
+| **Approx. training `num_timesteps`** | **~7.01 M** | **~8.45 M** |
+| **Candidate rollouts (stochastic)** | **64** | **64** |
+| **Winning seed** | **2** | **60** |
+| **Env steps to `flag_get`** | **310** | **291** |
+| **File playback (export)** | GIF: **156** frames @ **8 fps**, **≤256 px** wide → **~19.5 s** (subsampled from source 311 f @ 15 fps, **~20.7 s**) | **292** frames @ **15 fps** → **~19.47 s** |
+
+*Notes:* **Env steps** = `env.step` count to the flag (includes inner `frame_skip`). **Playback** = media file duration, not the NES in-game clock. If the inline **video** does not load on GitHub, use the download link or open the raw URL in VLC.
 
 ---
 
