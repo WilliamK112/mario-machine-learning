@@ -52,6 +52,7 @@ previews/
 # Episode trajectories and rollout videos.
 *.npz
 *.gif
+!docs/mario_ppo_flag_run.gif
 *.mp4
 *.mkv
 *.avi
