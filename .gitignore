@@ -61,6 +61,7 @@ previews/
 !docs/mario_ppo_shortest_flag_run.gif
 *.mp4
 !docs/mario_ppo_shortest_flag_run.mp4
+!docs/mario_1-2_shortest_flag.mp4
 *.mkv
 *.avi
 
