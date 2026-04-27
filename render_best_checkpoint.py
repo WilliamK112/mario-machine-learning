@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from collections import deque
 from pathlib import Path
 
 import numpy as np
+import torch
 import cv2
 from stable_baselines3 import PPO
 
@@ -161,6 +163,13 @@ def select_quality_key(rank_by: str):
     return episode_quality_key_default
 
 
+def _set_rollout_seeds(seed: int) -> None:
+    """Make a single stochastic rollout reproducible for a given env seed (CPU)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def run_one(
     *,
     model: PPO,
@@ -169,6 +178,7 @@ def run_one(
     deterministic: bool,
     max_steps: int,
 ) -> dict:
+    _set_rollout_seeds(seed)
     env = make_single_env(config, seed=seed)
     obs, _info = env.reset(seed=seed)
     frame_stack: deque[np.ndarray] = deque(maxlen=config.frame_stack)
