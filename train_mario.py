@@ -140,6 +140,13 @@ def parse_args() -> argparse.Namespace:
         help="One-time bonus granted per hurdle crossed within an episode.",
     )
     parser.add_argument(
+        "--time-penalty-per-step",
+        type=float,
+        default=0.0,
+        help="Subtract this from the shaped reward every agent step (encourages shorter episodes). "
+        "Typical fine-tune values: 0.01–0.05 with normalize-reward.",
+    )
+    parser.add_argument(
         "--action-bias-jump",
         type=float,
         default=0.0,
@@ -210,6 +217,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preview-fps", type=int, default=15)
     parser.add_argument("--live-preview", action="store_true")
     return parser.parse_args()
+
+
+def resolve_vecnormalize_pkl(resume_model_path: Path) -> Path | None:
+    """VecNormalize is saved next to checkpoints under models/; best_eval.zip lives in evaluations/."""
+    direct = resume_model_path.parent / "vecnormalize.pkl"
+    if direct.exists():
+        return direct
+    alt = resume_model_path.parent.parent / "models" / "vecnormalize.pkl"
+    if alt.exists():
+        return alt
+    return None
 
 
 def resolve_device(requested_device: str) -> str:
@@ -312,6 +330,7 @@ def main() -> None:
         milestone_bonus=args.milestone_bonus,
         hurdle_x=tuple(args.hurdle_x),
         hurdle_bonus=args.hurdle_bonus,
+        time_penalty_per_step=args.time_penalty_per_step,
         long_jump_action=args.long_jump_action,
         long_jump_hold_steps=args.long_jump_hold_steps,
         long_jump_base_action=args.long_jump_base_action,
@@ -331,13 +350,24 @@ def main() -> None:
             intrinsic_coef=args.rnd_coef,
         )
     if args.normalize_reward:
-        env = VecNormalize(
-            env,
-            norm_obs=False,
-            norm_reward=True,
-            clip_reward=args.norm_reward_clip,
-            gamma=0.99,
-        )
+        vec_pkl = resolve_vecnormalize_pkl(resume_model_path) if resume_model_path else None
+        if resume_model_path and vec_pkl is not None:
+            print(f"[vecnorm] loading running reward stats from {vec_pkl}")
+            env = VecNormalize.load(str(vec_pkl), env)
+            env.training = True
+        else:
+            if resume_model_path:
+                print(
+                    "[vecnorm] warning: no vecnormalize.pkl next to checkpoint or run/models/; "
+                    "starting fresh reward normalisation (not ideal for resume).",
+                )
+            env = VecNormalize(
+                env,
+                norm_obs=False,
+                norm_reward=True,
+                clip_reward=args.norm_reward_clip,
+                gamma=0.99,
+            )
     start_timesteps = 0
     callbacks = build_callbacks(
         args=args,

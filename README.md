@@ -77,6 +77,18 @@ GitHub README **does not show** `<video>` reliably, so this column uses an **ani
 
 ## 1. Quickstart (clone → train → see Mario play)
 
+### 1.0 Play 1-1 without training (shipped PPO)
+
+This repo includes a **1-1 flag-clear** policy (`best_eval.zip` from the time-penalty fine-tune run, **~8.45 M** env-steps on the SB3 counter). After `pip install -r requirements.txt`:
+
+```powershell
+python evaluate_mario.py --model pretrained/ppo_mario_1-1/best_eval.zip --episodes 3 --deterministic --output-dir out/eval_pretrained
+```
+
+`train_config.json` in the same folder restores wrappers / reward knobs. **`vecnormalize.pkl`** is only needed if you **resume training** from this checkpoint with `--normalize-reward` (see `train_mario.py`); pure play loads the policy only.
+
+---
+
 ```powershell
 # 1. Clone & set up the GPU virtualenv (one-time)
 git clone https://github.com/WilliamK112/mario-machine-learning.git
@@ -120,6 +132,7 @@ python render_best_checkpoint.py --auto --seeds 5 --gif
 mario-machine-learning/
 ├── README.md                       # this document
 ├── requirements.txt                # pinned deps for both stacks
+├── pretrained/ppo_mario_1-1/       # shipped 1-1 PPO: best_eval.zip + train_config.json (+ vecnormalize.pkl for resume)
 ├── mario_runtime.py                # NES wrapper, reward shaping, Monitor/VecEnv plumbing
 ├── train_mario.py                  # SB3 PPO trainer (single-stage, all hypers exposed)
 ├── train_mario_professional.py     # 3-phase staged PPO pipeline (multi-seed orchestration)

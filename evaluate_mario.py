@@ -86,6 +86,8 @@ def main() -> None:
 
     video_path = output_dir / "evaluation.mp4"
     save_video(captured_frames, video_path, fps=args.fps)
+    n_frames = len(captured_frames)
+    playback_s = n_frames / max(args.fps, 1)
 
     summary = build_rollout_summary(
         episodes=args.episodes,
@@ -95,12 +97,15 @@ def main() -> None:
         episode_flags=episode_flags,
         max_x_positions=max_x_positions,
         video_path=str(video_path),
+        video_fps=args.fps,
+        video_num_frames=n_frames,
     )
     summary["model"] = str(model_path)
     write_json(summary, output_dir / "summary.json")
     print(
         "eval_ok "
-        f"video={video_path} avg_return={summary['average_return']:.2f} "
+        f"video={video_path} playback_s={playback_s:.3f} ({n_frames}f@{args.fps}fps) "
+        f"avg_return={summary['average_return']:.2f} "
         f"flags_cleared={summary['flags_cleared']}/{args.episodes} "
         f"median_max_x={summary['median_max_x']:.1f}"
     )

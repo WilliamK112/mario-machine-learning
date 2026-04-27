@@ -49,6 +49,8 @@ runs/
 evaluations/
 previews/
 *.zip
+# Shipped 1-1 PPO for clone-and-play (see README).
+!pretrained/ppo_mario_1-1/best_eval.zip
 *.pt
 *.pth
 

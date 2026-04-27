@@ -253,6 +253,7 @@ class FastClearRewardWrapper(gym.Wrapper):
         milestone_bonus: float = 0.0,
         hurdle_x: tuple[int, ...] = (),
         hurdle_bonus: float = 0.0,
+        time_penalty_per_step: float = 0.0,
     ) -> None:
         super().__init__(env)
         self.forward_reward_scale = forward_reward_scale
@@ -266,6 +267,7 @@ class FastClearRewardWrapper(gym.Wrapper):
         self.milestone_bonus = milestone_bonus
         self.hurdle_x = tuple(sorted(int(x) for x in hurdle_x if int(x) > 0))
         self.hurdle_bonus = float(hurdle_bonus)
+        self.time_penalty_per_step = float(time_penalty_per_step)
         self._prev_x_pos = 0
         self._stall_count = 0
         self._max_milestone_index = -1
@@ -319,6 +321,9 @@ class FastClearRewardWrapper(gym.Wrapper):
         if info.get("flag_get", False):
             shaped_reward += self.flag_bonus
 
+        if self.time_penalty_per_step > 0.0:
+            shaped_reward -= self.time_penalty_per_step
+
         if (
             self.end_on_stall_steps > 0
             and self._stall_count >= self.end_on_stall_steps
@@ -354,6 +359,7 @@ class EnvConfig:
     milestone_bonus: float = 0.0
     hurdle_x: tuple[int, ...] = ()
     hurdle_bonus: float = 0.0
+    time_penalty_per_step: float = 0.0
     long_jump_action: bool = False
     long_jump_hold_steps: int = 4
     long_jump_base_action: int = -1  # -1 = auto: last jump-containing action in the set
@@ -396,6 +402,7 @@ def make_single_env(config: EnvConfig, seed: int | None = None):
         milestone_bonus=config.milestone_bonus,
         hurdle_x=config.hurdle_x,
         hurdle_bonus=config.hurdle_bonus,
+        time_penalty_per_step=config.time_penalty_per_step,
     )
     env = Monitor(env)
     env = WarpFrame(env, width=config.screen_size, height=config.screen_size)
@@ -538,6 +545,8 @@ def build_rollout_summary(
     episode_flags: list[bool],
     max_x_positions: list[int],
     video_path: str | None = None,
+    video_fps: int | None = None,
+    video_num_frames: int | None = None,
 ) -> dict[str, Any]:
     flags_cleared = sum(1 for cleared in episode_flags if cleared)
     remaining_distances = [
@@ -576,6 +585,11 @@ def build_rollout_summary(
     }
     if video_path:
         summary["video"] = video_path
+    if video_fps is not None and video_num_frames is not None:
+        fps_d = max(int(video_fps), 1)
+        summary["video_fps"] = int(video_fps)
+        summary["video_num_frames"] = int(video_num_frames)
+        summary["video_playback_seconds"] = float(video_num_frames) / float(fps_d)
     return summary
 
 
@@ -653,6 +667,8 @@ def run_policy_preview(
         episode_flags=episode_flags,
         max_x_positions=max_x_positions,
         video_path=str(video_path) if video_path else None,
+        video_fps=fps if video_path and captured_frames else None,
+        video_num_frames=len(captured_frames) if video_path and captured_frames else None,
     )
     write_json(summary, output_path / "summary.json")
     env.close()

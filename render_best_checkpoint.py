@@ -5,11 +5,15 @@ render_best_checkpoint.py
 Take a trained PPO checkpoint and render the best evaluation episode as MP4
 (and optionally GIF) for the README hero image.
 
-The script tries N seeds × {deterministic, stochastic} and keeps the
-*best* episode by the following priority:
-    1. flag_get == True  (any clear beats any non-clear)
-    2. max_x_pos descending
-    3. episode return descending
+The script tries N seeds × {deterministic, stochastic} and keeps one
+episode (one MP4 = one rollout, no concatenation). Ranking is controlled
+by ``--rank-by``:
+
+* ``default``: among clears prefer higher max_x, then higher return; if none
+  clear, prefer higher max_x then return.
+* ``fastest_clear``: among clears prefer **fewest env steps** (shortest
+  time-to-flag), then higher return; if none clear, same tie-break as
+  ``default``.
 
 Output:
     <output-dir>/best.mp4
@@ -36,6 +40,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+import cv2
 from stable_baselines3 import PPO
 
 from mario_runtime import EnvConfig
@@ -75,12 +80,24 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated subset of {deterministic,stochastic}.",
     )
     parser.add_argument("--fps", type=int, default=15)
+    parser.add_argument(
+        "--export-max-width",
+        type=int,
+        default=0,
+        help="If >0, downscale every RGB frame so width<=this (height keeps aspect, INTER_AREA). 0=full NES res.",
+    )
     parser.add_argument("--gif", action="store_true", help="Also write a GIF (slower, larger file).")
     parser.add_argument(
         "--output-dir",
         type=str,
         default="",
         help="Default: <model_dir>/best_render/",
+    )
+    parser.add_argument(
+        "--rank-by",
+        choices=("default", "fastest_clear"),
+        default="default",
+        help="How to pick the single episode to render (see module docstring).",
     )
     return parser.parse_args()
 
@@ -126,8 +143,21 @@ def auto_detect_checkpoint(prefer_latest_step: bool = False) -> Path | None:
     return None
 
 
-def episode_quality_key(ep: dict) -> tuple[int, int, float]:
+def episode_quality_key_default(ep: dict) -> tuple[int, int, float]:
     return (1 if ep["flag"] else 0, ep["max_x"], ep["return"])
+
+
+def episode_quality_key_fastest_clear(ep: dict) -> tuple[int, int, float]:
+    """Prefer flag clears with minimum step count; shorter length -> larger key."""
+    if ep["flag"]:
+        return (2, -int(ep["length"]), int(round(ep["return"] * 1000)))
+    return (1, ep["max_x"], int(round(ep["return"] * 1000)))
+
+
+def select_quality_key(rank_by: str):
+    if rank_by == "fastest_clear":
+        return episode_quality_key_fastest_clear
+    return episode_quality_key_default
 
 
 def run_one(
@@ -177,6 +207,23 @@ def run_one(
         "flag": bool(flag),
         "frames": frames,
     }
+
+
+def downscale_frame_rgb(frame: np.ndarray, max_width: int) -> np.ndarray:
+    if max_width <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    if w <= max_width:
+        return frame
+    new_w = max_width
+    new_h = max(1, int(round(h * (max_width / w))))
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def downscale_frames(frames: list[np.ndarray], max_width: int) -> list[np.ndarray]:
+    if max_width <= 0:
+        return frames
+    return [downscale_frame_rgb(f, max_width) for f in frames]
 
 
 def write_gif(frames: list[np.ndarray], path: Path, fps: int) -> None:
@@ -230,6 +277,7 @@ def main() -> None:
 
     all_runs: list[dict] = []
     best: dict | None = None
+    qkey = select_quality_key(args.rank_by)
 
     for seed_idx in range(args.seeds):
         for deterministic in modes:
@@ -243,7 +291,7 @@ def main() -> None:
                 max_steps=args.max_steps,
             )
             all_runs.append({k: v for k, v in ep.items() if k != "frames"})
-            if best is None or episode_quality_key(ep) > episode_quality_key(best):
+            if best is None or qkey(ep) > qkey(best):
                 best = ep
             print(
                 f"    -> return={ep['return']:.1f}  max_x={ep['max_x']}  "
@@ -252,17 +300,26 @@ def main() -> None:
 
     assert best is not None
     print(
-        f"BEST seed={best['seed']} deterministic={best['deterministic']} "
-        f"max_x={best['max_x']} flag={best['flag']} return={best['return']:.1f}"
+        f"BEST rank_by={args.rank_by} seed={best['seed']} "
+        f"deterministic={best['deterministic']} max_x={best['max_x']} "
+        f"flag={best['flag']} len={best['length']} return={best['return']:.1f}"
     )
 
+    out_frames = downscale_frames(best["frames"], args.export_max_width)
+    if args.export_max_width > 0:
+        print(f"  export: downscaled to max_width={args.export_max_width} px (cv2.INTER_AREA)")
+
     mp4_path = output_dir / "best.mp4"
-    save_video(best["frames"], mp4_path, fps=args.fps)
-    print(f"  wrote {mp4_path}")
+    save_video(out_frames, mp4_path, fps=args.fps)
+    n_frames = len(out_frames)
+    playback_s = n_frames / max(args.fps, 1)
+    print(
+        f"  wrote {mp4_path}  ({n_frames} frames @ {args.fps} fps -> playback {playback_s:.3f}s)"
+    )
 
     if args.gif:
         gif_path = output_dir / "best.gif"
-        write_gif(best["frames"], gif_path, fps=args.fps)
+        write_gif(out_frames, gif_path, fps=args.fps)
         if gif_path.exists():
             print(f"  wrote {gif_path}")
 
@@ -274,9 +331,12 @@ def main() -> None:
         episode_flags=[best["flag"]],
         max_x_positions=[best["max_x"]],
         video_path=str(mp4_path),
+        video_fps=args.fps,
+        video_num_frames=n_frames,
     )
     summary["seed"] = best["seed"]
     summary["model"] = str(model_path)
+    summary["rank_by"] = args.rank_by
     (output_dir / "best.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     (output_dir / "all_runs.json").write_text(
