@@ -41,6 +41,9 @@ dreamerv3/vis_*/
 dreamerv3/result*/
 dreamerv3/wandb/
 
+# Local checkpoint copies (scripts/backup_1-1_checkpoints.ps1); large zips stay out of git.
+backups/
+
 # Stable-Baselines3 outputs from earlier PPO baseline.
 runs/
 evaluations/
