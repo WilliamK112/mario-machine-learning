@@ -51,7 +51,17 @@ def apply_action_logit_bias(model: PPO, indices: list[int], bias_value: float) -
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a PPO agent for Super Mario Bros 1-1.")
+    parser = argparse.ArgumentParser(
+        description="Train a PPO agent for Super Mario Bros (single stage via --world/--stage).",
+    )
+    parser.add_argument("--world", type=int, default=1, help="World 1–8 (vanilla SMB).")
+    parser.add_argument("--stage", type=int, default=1, help="Stage 1–4 within the world.")
+    parser.add_argument(
+        "--goal-line-x",
+        type=int,
+        default=0,
+        help="Override flag-line x for x-metrics / shaping sanity (0 = use built-in table for world/stage).",
+    )
     parser.add_argument("--timesteps", type=int, default=20_000)
     parser.add_argument("--resume-model", type=str, default="")
     parser.add_argument("--n-envs", type=int, default=4)
@@ -311,6 +321,9 @@ def main() -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     config = EnvConfig(
+        world=args.world,
+        stage=args.stage,
+        goal_line_x=args.goal_line_x,
         n_envs=args.n_envs,
         vec_backend=args.vec_backend,
         frame_skip=args.frame_skip,

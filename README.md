@@ -87,6 +87,13 @@ python evaluate_mario.py --model pretrained/ppo_mario_1-1/best_eval.zip --episod
 
 `train_config.json` in the same folder restores wrappers / reward knobs. **`vecnormalize.pkl`** is only needed if you **resume training** from this checkpoint with `--normalize-reward` (see `train_mario.py`); pure play loads the policy only.
 
+### Longer-term goal: all levels (efficient recipe)
+
+1. **Per-stage fine-tune:** For each new `(world, stage)`, resume from the **best** checkpoint on the *previous* stage (or a multi-task checkpoint later). Use `train_mario.py --world W --stage S` (see `STAGE_FLAG_LINE_X` in `mario_runtime.py` — extend the table as you verify flag x).
+2. **Keep `best_eval.zip`:** Terminal `mario_final.zip` can be weaker than mid-run eval peaks; ship/play the eval winner.
+3. **Fight forgetting:** Once 1-2 works, mix 1-1 + 1-2 rollouts (future work: multi-stage `VecEnv`) or run periodic 1-1 eval while training on new stages.
+4. **Scripted kickoff for 1-2:** `scripts/train_mario_1-2_finetune.ps1` resumes `pretrained/ppo_mario_1-1/best_eval.zip` on **1-2** with the P10-style hyperparameters (tune `--hurdle-x` per level length).
+
 ---
 
 ```powershell

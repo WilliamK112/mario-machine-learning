@@ -33,8 +33,23 @@ ACTION_SET_MAP = {
 }
 DEFAULT_ACTIONS = RIGHT_ONLY
 LEVEL_1_1_GOAL_X = 3161
-MAX_REASONABLE_X_POS = LEVEL_1_1_GOAL_X + 256
 MAX_REASONABLE_X_DELTA = 256
+
+# Approximate flag-pole x (same units as smb_env `_x_position`) for metrics / x sanitization.
+# Extend as you unlock more stages. Unknown (world, stage) falls back to 3200.
+STAGE_FLAG_LINE_X: dict[tuple[int, int], int] = {
+    (1, 1): 3161,
+    (1, 2): 2528,
+    (1, 3): 2848,
+    (1, 4): 3216,
+}
+
+
+def effective_goal_line_x(cfg: "EnvConfig") -> int:
+    """Resolved goal-line x for the configured stage (override or table)."""
+    if cfg.goal_line_x > 0:
+        return int(cfg.goal_line_x)
+    return int(STAGE_FLAG_LINE_X.get((int(cfg.world), int(cfg.stage)), 3200))
 
 
 class JoypadSpace(gym.Wrapper):
@@ -254,8 +269,10 @@ class FastClearRewardWrapper(gym.Wrapper):
         hurdle_x: tuple[int, ...] = (),
         hurdle_bonus: float = 0.0,
         time_penalty_per_step: float = 0.0,
+        goal_line_x: int = LEVEL_1_1_GOAL_X,
     ) -> None:
         super().__init__(env)
+        self._goal_line_x = int(goal_line_x)
         self.forward_reward_scale = forward_reward_scale
         self.backward_penalty_scale = backward_penalty_scale
         self.flag_bonus = flag_bonus
@@ -275,7 +292,10 @@ class FastClearRewardWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self._prev_x_pos = sanitize_x_position(info.get("x_pos", 0))
+        self._prev_x_pos = sanitize_x_position(
+            info.get("x_pos", 0),
+            goal_line_x=self._goal_line_x,
+        )
         self._stall_count = 0
         self._max_milestone_index = -1
         self._hurdles_claimed = set()
@@ -283,7 +303,11 @@ class FastClearRewardWrapper(gym.Wrapper):
 
     def step(self, action: int):
         obs, reward, terminated, truncated, info = self.env.step(action)
-        x_pos = extract_sanitized_x_position(info, previous_x_pos=self._prev_x_pos)
+        x_pos = extract_sanitized_x_position(
+            info,
+            previous_x_pos=self._prev_x_pos,
+            goal_line_x=self._goal_line_x,
+        )
         delta_x = x_pos - self._prev_x_pos
         shaped_reward = float(reward)
 
@@ -363,6 +387,8 @@ class EnvConfig:
     long_jump_action: bool = False
     long_jump_hold_steps: int = 4
     long_jump_base_action: int = -1  # -1 = auto: last jump-containing action in the set
+    # 0 = use STAGE_FLAG_LINE_X for (world, stage); >0 overrides (for custom ROM/layout).
+    goal_line_x: int = 0
 
 
 def make_single_env(config: EnvConfig, seed: int | None = None):
@@ -403,6 +429,7 @@ def make_single_env(config: EnvConfig, seed: int | None = None):
         hurdle_x=config.hurdle_x,
         hurdle_bonus=config.hurdle_bonus,
         time_penalty_per_step=config.time_penalty_per_step,
+        goal_line_x=effective_goal_line_x(config),
     )
     env = Monitor(env)
     env = WarpFrame(env, width=config.screen_size, height=config.screen_size)
@@ -509,17 +536,25 @@ def sanitize_x_position(
     *,
     previous_x_pos: int = 0,
     flag_get: bool = False,
+    goal_line_x: int = LEVEL_1_1_GOAL_X,
 ) -> int:
     previous = max(0, int(previous_x_pos))
+    max_reasonable = int(goal_line_x) + 256
     if flag_get:
-        return LEVEL_1_1_GOAL_X
+        try:
+            xp = int(raw_x_pos)
+        except (TypeError, ValueError):
+            return int(goal_line_x)
+        if 0 < xp <= max_reasonable + 128:
+            return xp
+        return int(goal_line_x)
 
     try:
         x_pos = int(raw_x_pos)
     except (TypeError, ValueError):
         return previous
 
-    if x_pos < 0 or x_pos > MAX_REASONABLE_X_POS:
+    if x_pos < 0 or x_pos > max_reasonable:
         return previous
 
     if previous > 0 and x_pos - previous > MAX_REASONABLE_X_DELTA:
@@ -528,11 +563,17 @@ def sanitize_x_position(
     return x_pos
 
 
-def extract_sanitized_x_position(info: dict[str, Any], *, previous_x_pos: int = 0) -> int:
+def extract_sanitized_x_position(
+    info: dict[str, Any],
+    *,
+    previous_x_pos: int = 0,
+    goal_line_x: int = LEVEL_1_1_GOAL_X,
+) -> int:
     return sanitize_x_position(
         info.get("x_pos", previous_x_pos),
         previous_x_pos=previous_x_pos,
         flag_get=bool(info.get("flag_get", False)),
+        goal_line_x=goal_line_x,
     )
 
 
@@ -547,14 +588,17 @@ def build_rollout_summary(
     video_path: str | None = None,
     video_fps: int | None = None,
     video_num_frames: int | None = None,
+    goal_line_x: int = LEVEL_1_1_GOAL_X,
 ) -> dict[str, Any]:
     flags_cleared = sum(1 for cleared in episode_flags if cleared)
+    gl = int(goal_line_x)
     remaining_distances = [
-        0 if cleared else max(0, LEVEL_1_1_GOAL_X - x)
+        0 if cleared else max(0, gl - x)
         for x, cleared in zip(max_x_positions, episode_flags)
     ]
     clear_lengths = [length for length, cleared in zip(episode_lengths, episode_flags) if cleared]
     summary = {
+        "goal_line_x": gl,
         "episodes": episodes,
         "deterministic": deterministic,
         "average_return": float(np.mean(episode_returns)) if episode_returns else 0.0,
@@ -570,15 +614,15 @@ def build_rollout_summary(
         "best_max_x": int(max(max_x_positions)) if max_x_positions else 0,
         "remaining_distances": remaining_distances,
         "average_remaining_distance": (
-            float(np.mean(remaining_distances)) if remaining_distances else float(LEVEL_1_1_GOAL_X)
+            float(np.mean(remaining_distances)) if remaining_distances else float(gl)
         ),
         "median_remaining_distance": (
             float(np.median(remaining_distances))
             if remaining_distances
-            else float(LEVEL_1_1_GOAL_X)
+            else float(gl)
         ),
         "best_remaining_distance": (
-            int(min(remaining_distances)) if remaining_distances else LEVEL_1_1_GOAL_X
+            int(min(remaining_distances)) if remaining_distances else gl
         ),
         "average_clear_steps": float(np.mean(clear_lengths)) if clear_lengths else None,
         "best_clear_steps": int(min(clear_lengths)) if clear_lengths else None,
@@ -629,6 +673,7 @@ def run_policy_preview(
         episode_length = 0
         episode_max_x = 0
         episode_x_pos = 0
+        goal_x = effective_goal_line_x(preview_config)
         if record_video:
             captured_frames.append(render_rgb_frame(env))
 
@@ -644,7 +689,9 @@ def run_policy_preview(
                 captured_frames.append(render_rgb_frame(env))
             episode_return += float(reward)
             episode_length += 1
-            episode_x_pos = extract_sanitized_x_position(info, previous_x_pos=episode_x_pos)
+            episode_x_pos = extract_sanitized_x_position(
+                info, previous_x_pos=episode_x_pos, goal_line_x=goal_x
+            )
             episode_max_x = max(episode_max_x, episode_x_pos)
             done = bool(terminated or truncated)
 
@@ -669,6 +716,7 @@ def run_policy_preview(
         video_path=str(video_path) if video_path else None,
         video_fps=fps if video_path and captured_frames else None,
         video_num_frames=len(captured_frames) if video_path and captured_frames else None,
+        goal_line_x=effective_goal_line_x(preview_config),
     )
     write_json(summary, output_path / "summary.json")
     env.close()

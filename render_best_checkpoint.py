@@ -45,6 +45,7 @@ from stable_baselines3 import PPO
 
 from mario_runtime import EnvConfig
 from mario_runtime import build_rollout_summary
+from mario_runtime import effective_goal_line_x
 from mario_runtime import extract_sanitized_x_position
 from mario_runtime import load_env_config_for_model
 from mario_runtime import make_single_env
@@ -182,6 +183,7 @@ def run_one(
     episode_x_pos = 0
     flag = False
     done = False
+    goal_x = effective_goal_line_x(config)
 
     while not done and episode_length < max_steps:
         stacked = np.concatenate(list(frame_stack), axis=2).transpose(2, 0, 1)
@@ -333,6 +335,7 @@ def main() -> None:
         video_path=str(mp4_path),
         video_fps=args.fps,
         video_num_frames=n_frames,
+        goal_line_x=effective_goal_line_x(config),
     )
     summary["seed"] = best["seed"]
     summary["model"] = str(model_path)

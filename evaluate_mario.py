@@ -8,6 +8,7 @@ import numpy as np
 from stable_baselines3 import PPO
 
 from mario_runtime import build_rollout_summary
+from mario_runtime import effective_goal_line_x
 from mario_runtime import extract_sanitized_x_position
 from mario_runtime import EnvConfig
 from mario_runtime import load_env_config_for_model
@@ -47,6 +48,7 @@ def main() -> None:
     config.end_on_flag = True
     env = make_single_env(config, seed=args.seed)
     model = PPO.load(model_path, device="cpu")
+    goal_x = effective_goal_line_x(config)
 
     episode_returns: list[float] = []
     episode_lengths: list[int] = []
@@ -75,7 +77,9 @@ def main() -> None:
             captured_frames.append(render_rgb_frame(env))
             episode_return += float(reward)
             episode_length += 1
-            episode_x_pos = extract_sanitized_x_position(info, previous_x_pos=episode_x_pos)
+            episode_x_pos = extract_sanitized_x_position(
+                info, previous_x_pos=episode_x_pos, goal_line_x=goal_x
+            )
             episode_max_x = max(episode_max_x, episode_x_pos)
             done = bool(terminated or truncated)
 
@@ -99,6 +103,7 @@ def main() -> None:
         video_path=str(video_path),
         video_fps=args.fps,
         video_num_frames=n_frames,
+        goal_line_x=goal_x,
     )
     summary["model"] = str(model_path)
     write_json(summary, output_dir / "summary.json")
