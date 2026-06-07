@@ -12,6 +12,7 @@ from typing import Any
 import gymnasium as gym
 import imageio.v2 as imageio
 import numpy as np
+from gymnasium_super_mario_bros.actions import COMPLEX_MOVEMENT
 from gymnasium_super_mario_bros.actions import RIGHT_ONLY
 from gymnasium_super_mario_bros.actions import SIMPLE_MOVEMENT
 from gymnasium_super_mario_bros.smb_env import SuperMarioBrosEnv
@@ -30,6 +31,18 @@ from stable_baselines3.common.vec_env import VecTransposeImage
 ACTION_SET_MAP = {
     "right_only": RIGHT_ONLY,
     "simple": SIMPLE_MOVEMENT,
+    # Same action-space size as SIMPLE_MOVEMENT, but replaces stand-still jump
+    # with DOWN so old 7-action PPO checkpoints can learn pipe exits in 1-2.
+    "simple_pipe": [
+        ["NOOP"],
+        ["right"],
+        ["right", "A"],
+        ["right", "B"],
+        ["right", "A", "B"],
+        ["down"],
+        ["left"],
+    ],
+    "complex": COMPLEX_MOVEMENT,
 }
 DEFAULT_ACTIONS = RIGHT_ONLY
 LEVEL_1_1_GOAL_X = 3161
@@ -49,7 +62,34 @@ def effective_goal_line_x(cfg: "EnvConfig") -> int:
     """Resolved goal-line x for the configured stage (override or table)."""
     if cfg.goal_line_x > 0:
         return int(cfg.goal_line_x)
+    if getattr(cfg, "whole_game", False):
+        return 3200
     return int(STAGE_FLAG_LINE_X.get((int(cfg.world), int(cfg.stage)), 3200))
+
+
+def goal_line_x_for_world_stage(
+    world_stage: tuple[int, int] | None,
+    *,
+    fallback: int = 3200,
+) -> int:
+    if world_stage is None:
+        return int(fallback)
+    world, stage = world_stage
+    return int(STAGE_FLAG_LINE_X.get((int(world), int(stage)), int(fallback)))
+
+
+def world_stage_from_info(
+    info: dict[str, Any],
+    fallback: tuple[int, int] | None = None,
+) -> tuple[int, int] | None:
+    world = info.get("world")
+    stage = info.get("stage")
+    if world is None or stage is None:
+        return fallback
+    try:
+        return int(world), int(stage)
+    except (TypeError, ValueError):
+        return fallback
 
 
 class JoypadSpace(gym.Wrapper):
@@ -162,6 +202,23 @@ class NoopResetEnv(gym.Wrapper):
         return obs, info
 
 
+class ExactNoopResetEnv(gym.Wrapper):
+    """Run a fixed number of no-op actions after reset for reproducible starts."""
+
+    def __init__(self, env: gym.Env, noop_steps: int = 0) -> None:
+        super().__init__(env)
+        self.noop_steps = max(0, int(noop_steps))
+        self.noop_action = 0
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        for _ in range(self.noop_steps):
+            obs, _, terminated, truncated, info = self.env.step(self.noop_action)
+            if terminated or truncated:
+                obs, info = self.env.reset(**kwargs)
+        return obs, info
+
+
 class MaxAndSkipFrame(gym.Wrapper):
     """Repeat actions for several frames and max-pool the last two observations."""
 
@@ -236,6 +293,80 @@ class LongJumpActionWrapper(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
+class HoldSelectedActionsWrapper(gym.Wrapper):
+    """Repeat selected existing actions without changing the action-space shape."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        action_indices: tuple[int, ...],
+        hold_steps: int = 1,
+    ) -> None:
+        super().__init__(env)
+        self._action_indices = frozenset(int(idx) for idx in action_indices)
+        self._hold_steps = max(1, int(hold_steps))
+
+    def step(self, action: int):
+        action_int = int(action)
+        if self._hold_steps <= 1 or action_int not in self._action_indices:
+            return self.env.step(action_int)
+        total_reward = 0.0
+        terminated = False
+        truncated = False
+        info: dict[str, Any] = {}
+        obs = None
+        for _ in range(self._hold_steps):
+            obs, reward, terminated, truncated, info = self.env.step(action_int)
+            total_reward += float(reward)
+            if terminated or truncated:
+                break
+        info = dict(info)
+        info["held_action"] = action_int
+        info["held_action_steps"] = self._hold_steps
+        return obs, total_reward, terminated, truncated, info
+
+
+class AssistActionWindowWrapper(gym.Wrapper):
+    """Temporarily replace actions inside x-position windows for curriculum runs."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        windows: tuple[tuple[int, int, int], ...],
+    ) -> None:
+        super().__init__(env)
+        self._windows = tuple((int(lo), int(hi), int(action)) for lo, hi, action in windows)
+        self._last_x_pos = 0
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        try:
+            self._last_x_pos = int(info.get("x_pos", 0))
+        except (TypeError, ValueError):
+            self._last_x_pos = 0
+        return obs, info
+
+    def step(self, action: int):
+        original_action = int(action)
+        assisted_action = original_action
+        for lo, hi, forced_action in self._windows:
+            if lo <= self._last_x_pos <= hi:
+                assisted_action = forced_action
+                break
+        obs, reward, terminated, truncated, info = self.env.step(assisted_action)
+        info = dict(info)
+        if assisted_action != original_action:
+            info["assist_action_from"] = original_action
+            info["assist_action_to"] = assisted_action
+        try:
+            self._last_x_pos = int(info.get("x_pos", self._last_x_pos))
+        except (TypeError, ValueError):
+            pass
+        return obs, reward, terminated, truncated, info
+
+
 class StageSuccessWrapper(gym.Wrapper):
     """Optionally end an episode when Mario reaches the flag."""
 
@@ -251,7 +382,7 @@ class StageSuccessWrapper(gym.Wrapper):
 
 
 class FastClearRewardWrapper(gym.Wrapper):
-    """Shape rewards toward rapid level completion for a single fixed stage."""
+    """Shape rewards toward rapid level completion and whole-game progression."""
 
     def __init__(
         self,
@@ -269,12 +400,35 @@ class FastClearRewardWrapper(gym.Wrapper):
         hurdle_x: tuple[int, ...] = (),
         hurdle_bonus: float = 0.0,
         time_penalty_per_step: float = 0.0,
+        life_loss_penalty: float = 0.0,
+        end_on_life_loss: bool = False,
+        stage_clear_bonus: float = 0.0,
+        progress_reward_mode: str = "delta",
+        jump_window_x_min: int = 0,
+        jump_window_x_max: int = 0,
+        jump_window_bonus: float = 0.0,
+        airborne_window_x_min: int = 0,
+        airborne_window_x_max: int = 0,
+        airborne_min_y: int = 0,
+        airborne_bonus: float = 0.0,
+        grounded_penalty: float = 0.0,
+        jump_action_indices: tuple[int, ...] = (),
+        down_action_indices: tuple[int, ...] = (),
+        left_action_indices: tuple[int, ...] = (),
+        pipe_entry_x: int = 0,
+        pipe_entry_bonus: float = 0.0,
+        left_penalty_x_min: int = 0,
+        left_action_penalty: float = 0.0,
         goal_line_x: int = LEVEL_1_1_GOAL_X,
+        backtrack_relief_stall_steps: int = 0,
+        backtrack_bonus_scale: float = 0.0,
     ) -> None:
         super().__init__(env)
         self._goal_line_x = int(goal_line_x)
         self.forward_reward_scale = forward_reward_scale
         self.backward_penalty_scale = backward_penalty_scale
+        self.backtrack_relief_stall_steps = int(backtrack_relief_stall_steps)
+        self.backtrack_bonus_scale = float(backtrack_bonus_scale)
         self.flag_bonus = flag_bonus
         self.stall_steps = stall_steps
         self.stall_penalty = stall_penalty
@@ -285,7 +439,29 @@ class FastClearRewardWrapper(gym.Wrapper):
         self.hurdle_x = tuple(sorted(int(x) for x in hurdle_x if int(x) > 0))
         self.hurdle_bonus = float(hurdle_bonus)
         self.time_penalty_per_step = float(time_penalty_per_step)
+        self.life_loss_penalty = float(life_loss_penalty)
+        self.end_on_life_loss = bool(end_on_life_loss)
+        self.stage_clear_bonus = float(stage_clear_bonus)
+        self.progress_reward_mode = str(progress_reward_mode).lower()
+        self.jump_window_x_min = int(jump_window_x_min)
+        self.jump_window_x_max = int(jump_window_x_max)
+        self.jump_window_bonus = float(jump_window_bonus)
+        self.airborne_window_x_min = int(airborne_window_x_min)
+        self.airborne_window_x_max = int(airborne_window_x_max)
+        self.airborne_min_y = int(airborne_min_y)
+        self.airborne_bonus = float(airborne_bonus)
+        self.grounded_penalty = float(grounded_penalty)
+        self.jump_action_indices = frozenset(int(idx) for idx in jump_action_indices)
+        self.down_action_indices = frozenset(int(idx) for idx in down_action_indices)
+        self.left_action_indices = frozenset(int(idx) for idx in left_action_indices)
+        self.pipe_entry_x = int(pipe_entry_x)
+        self.pipe_entry_bonus = float(pipe_entry_bonus)
+        self.left_penalty_x_min = int(left_penalty_x_min)
+        self.left_action_penalty = float(left_action_penalty)
         self._prev_x_pos = 0
+        self._max_x_pos = 0
+        self._prev_world_stage: tuple[int, int] | None = None
+        self._prev_life_count: int | None = None
         self._stall_count = 0
         self._max_milestone_index = -1
         self._hurdles_claimed: set[int] = set()
@@ -296,6 +472,9 @@ class FastClearRewardWrapper(gym.Wrapper):
             info.get("x_pos", 0),
             goal_line_x=self._goal_line_x,
         )
+        self._max_x_pos = self._prev_x_pos
+        self._prev_world_stage = world_stage_from_info(info)
+        self._prev_life_count = _life_count_from_info(info)
         self._stall_count = 0
         self._max_milestone_index = -1
         self._hurdles_claimed = set()
@@ -303,21 +482,81 @@ class FastClearRewardWrapper(gym.Wrapper):
 
     def step(self, action: int):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        info = dict(info)
+        current_world_stage = world_stage_from_info(info, self._prev_world_stage)
+        stage_changed = (
+            current_world_stage is not None
+            and self._prev_world_stage is not None
+            and current_world_stage != self._prev_world_stage
+        )
+        stage_advanced = (
+            stage_changed
+            and stage_order_index(current_world_stage) > stage_order_index(self._prev_world_stage)
+        )
         x_pos = extract_sanitized_x_position(
             info,
-            previous_x_pos=self._prev_x_pos,
+            previous_x_pos=0 if stage_changed else self._prev_x_pos,
             goal_line_x=self._goal_line_x,
         )
-        delta_x = x_pos - self._prev_x_pos
+        delta_x = 0 if stage_changed else x_pos - self._prev_x_pos
         shaped_reward = float(reward)
+        current_life_count = _life_count_from_info(info)
+        current_y_pos = _int_from_info(info, "y_pos")
 
-        if delta_x > 0:
+        if stage_changed:
+            info["stage_changed"] = True
+            info["stage_change_from"] = list(self._prev_world_stage)
+            info["stage_change_to"] = list(current_world_stage)
+            info["stage_change_forward"] = bool(stage_advanced)
+
+        if stage_advanced:
+            if self.stage_clear_bonus > 0.0:
+                shaped_reward += self.stage_clear_bonus
+            info["stage_clear"] = True
+            info["stage_clear_bonus"] = self.stage_clear_bonus
+            info["stage_clear_from"] = list(self._prev_world_stage)
+            info["stage_clear_to"] = list(current_world_stage)
+            self._stall_count = 0
+            self._max_milestone_index = -1
+            self._hurdles_claimed = set()
+
+        if stage_changed:
+            pass
+        elif self.progress_reward_mode == "new_max":
+            new_progress = max(0, x_pos - self._max_x_pos)
+            if new_progress > 0:
+                shaped_reward += new_progress * self.forward_reward_scale
+                self._stall_count = 0
+                info["new_max_progress_x"] = int(x_pos)
+            else:
+                self._stall_count += 1
+                if delta_x < 0:
+                    stalled_relief = (
+                        self.backtrack_relief_stall_steps > 0
+                        and self._stall_count >= self.backtrack_relief_stall_steps
+                    )
+                    if stalled_relief:
+                        if self.backtrack_bonus_scale > 0.0:
+                            shaped_reward += abs(delta_x) * self.backtrack_bonus_scale
+                    else:
+                        shaped_reward -= abs(delta_x) * self.backward_penalty_scale
+                if self._stall_count >= self.stall_steps:
+                    shaped_reward -= self.stall_penalty
+        elif delta_x > 0:
             shaped_reward += delta_x * self.forward_reward_scale
             self._stall_count = 0
         else:
             self._stall_count += 1
             if delta_x < 0:
-                shaped_reward -= abs(delta_x) * self.backward_penalty_scale
+                stalled_relief = (
+                    self.backtrack_relief_stall_steps > 0
+                    and self._stall_count >= self.backtrack_relief_stall_steps
+                )
+                if stalled_relief:
+                    if self.backtrack_bonus_scale > 0.0:
+                        shaped_reward += abs(delta_x) * self.backtrack_bonus_scale
+                else:
+                    shaped_reward -= abs(delta_x) * self.backward_penalty_scale
             if self._stall_count >= self.stall_steps:
                 shaped_reward -= self.stall_penalty
 
@@ -342,8 +581,67 @@ class FastClearRewardWrapper(gym.Wrapper):
                     self._hurdles_claimed.add(threshold)
                     info.setdefault("hurdle_cleared", []).append(int(threshold))
 
+        if (
+            self.jump_window_bonus > 0.0
+            and self.jump_window_x_min > 0
+            and self.jump_window_x_max >= self.jump_window_x_min
+            and self.jump_window_x_min <= x_pos <= self.jump_window_x_max
+            and delta_x > 0
+            and int(action) in self.jump_action_indices
+        ):
+            shaped_reward += self.jump_window_bonus
+            info["jump_window_bonus"] = self.jump_window_bonus
+
+        if (
+            not stage_changed
+            and self.airborne_window_x_min > 0
+            and self.airborne_window_x_max >= self.airborne_window_x_min
+            and self.airborne_window_x_min <= x_pos <= self.airborne_window_x_max
+            and current_y_pos is not None
+        ):
+            if current_y_pos >= self.airborne_min_y:
+                if self.airborne_bonus > 0.0:
+                    shaped_reward += self.airborne_bonus
+                    info["airborne_window_bonus"] = self.airborne_bonus
+            elif self.grounded_penalty > 0.0:
+                shaped_reward -= self.grounded_penalty
+                info["grounded_window_penalty"] = self.grounded_penalty
+
+        if (
+            self.pipe_entry_bonus > 0.0
+            and self.pipe_entry_x > 0
+            and x_pos >= self.pipe_entry_x
+            and int(action) in self.down_action_indices
+        ):
+            shaped_reward += self.pipe_entry_bonus
+            info["pipe_entry_action_bonus"] = self.pipe_entry_bonus
+
+        if (
+            self.left_action_penalty > 0.0
+            and self.left_penalty_x_min > 0
+            and x_pos >= self.left_penalty_x_min
+            and int(action) in self.left_action_indices
+        ):
+            shaped_reward -= self.left_action_penalty
+            info["left_action_penalty"] = self.left_action_penalty
+
         if info.get("flag_get", False):
             shaped_reward += self.flag_bonus
+
+        life_lost = (
+            self._prev_life_count is not None
+            and current_life_count is not None
+            and current_life_count < self._prev_life_count
+        )
+        if life_lost:
+            if self.life_loss_penalty > 0.0:
+                shaped_reward -= self.life_loss_penalty
+            info["life_lost"] = True
+            if self.life_loss_penalty > 0.0:
+                info["life_loss_penalty"] = self.life_loss_penalty
+            if self.end_on_life_loss:
+                terminated = True
+                info["life_loss_terminated"] = True
 
         if self.time_penalty_per_step > 0.0:
             shaped_reward -= self.time_penalty_per_step
@@ -357,6 +655,140 @@ class FastClearRewardWrapper(gym.Wrapper):
             info["stall_truncated"] = True
 
         self._prev_x_pos = x_pos
+        self._max_x_pos = x_pos if stage_changed else max(self._max_x_pos, x_pos)
+        self._prev_world_stage = current_world_stage
+        if current_life_count is not None:
+            self._prev_life_count = current_life_count
+        return obs, shaped_reward, terminated, truncated, info
+
+
+class GhostTraceRewardWrapper(gym.Wrapper):
+    """Add a small reward for matching or beating a reference route trace."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        trace_path: str | os.PathLike[str],
+        reward_scale: float = 0.0,
+        near_bonus: float = 0.0,
+        near_x: int = 64,
+        lead_margin: int = 0,
+        progress_stride: int = 10_000,
+        reward_cap: float = 5.0,
+        align_to_current_stage: bool = True,
+    ) -> None:
+        super().__init__(env)
+        path = Path(trace_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Ghost trace not found: {path}")
+        data = np.load(path, allow_pickle=False)
+        required = {"worlds", "stages", "stage_x"}
+        missing = required.difference(data.files)
+        if missing:
+            raise ValueError(f"Ghost trace {path} is missing fields: {sorted(missing)}")
+        self.trace_path = str(path)
+        self.reward_scale = float(reward_scale)
+        self.near_bonus = float(near_bonus)
+        self.near_x = max(1, int(near_x))
+        self.lead_margin = int(lead_margin)
+        self.progress_stride = int(progress_stride)
+        self.reward_cap = float(reward_cap)
+        self.align_to_current_stage = bool(align_to_current_stage)
+        self._worlds = np.asarray(data["worlds"], dtype=np.int16)
+        self._stages = np.asarray(data["stages"], dtype=np.int16)
+        self._stage_x = np.asarray(data["stage_x"], dtype=np.int32)
+        if len(self._stage_x) == 0:
+            raise ValueError(f"Ghost trace {path} is empty.")
+        if "route_progress" in data.files:
+            self._route_progress = np.asarray(data["route_progress"], dtype=np.float32)
+        else:
+            self._route_progress = np.asarray(
+                [
+                    self._route_progress_value((int(w), int(s)), int(x))
+                    for w, s, x in zip(self._worlds, self._stages, self._stage_x, strict=False)
+                ],
+                dtype=np.float32,
+            )
+        self._first_index_by_stage: dict[tuple[int, int], int] = {}
+        for idx, (world, stage) in enumerate(zip(self._worlds, self._stages, strict=False)):
+            self._first_index_by_stage.setdefault((int(world), int(stage)), int(idx))
+        self._elapsed_steps = 0
+        self._episode_start_index = 0
+        self._prev_world_stage: tuple[int, int] | None = None
+        self._prev_stage_x = 0
+
+    def _route_progress_value(self, world_stage: tuple[int, int] | None, stage_x: int) -> float:
+        return float(stage_order_index(world_stage) * self.progress_stride + int(stage_x))
+
+    def _ghost_index(self) -> int:
+        return int(min(self._episode_start_index + max(0, self._elapsed_steps - 1), len(self._stage_x) - 1))
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        info = dict(info)
+        self._elapsed_steps = 0
+        self._prev_world_stage = world_stage_from_info(info)
+        self._prev_stage_x = extract_sanitized_x_position(
+            info,
+            previous_x_pos=0,
+            goal_line_x=goal_line_x_for_world_stage(self._prev_world_stage, fallback=3200),
+        )
+        self._episode_start_index = 0
+        if self.align_to_current_stage and self._prev_world_stage is not None:
+            self._episode_start_index = self._first_index_by_stage.get(self._prev_world_stage, 0)
+        return obs, info
+
+    def step(self, action: int):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        info = dict(info)
+        self._elapsed_steps += 1
+        current_world_stage = world_stage_from_info(info, self._prev_world_stage)
+        if (
+            self.align_to_current_stage
+            and self._elapsed_steps == 1
+            and self._prev_world_stage is None
+            and current_world_stage is not None
+        ):
+            self._episode_start_index = self._first_index_by_stage.get(current_world_stage, 0)
+        stage_changed = (
+            current_world_stage is not None
+            and self._prev_world_stage is not None
+            and current_world_stage != self._prev_world_stage
+        )
+        stage_x = extract_sanitized_x_position(
+            info,
+            previous_x_pos=0 if stage_changed else self._prev_stage_x,
+            goal_line_x=goal_line_x_for_world_stage(current_world_stage, fallback=3200),
+        )
+        ghost_idx = self._ghost_index()
+        ghost_world_stage = (int(self._worlds[ghost_idx]), int(self._stages[ghost_idx]))
+        ghost_stage_x = int(self._stage_x[ghost_idx])
+        agent_progress = self._route_progress_value(current_world_stage, stage_x)
+        ghost_progress = float(self._route_progress[ghost_idx])
+        raw_lead = agent_progress - ghost_progress
+        adjusted_lead = raw_lead - float(self.lead_margin)
+        ghost_reward = self.reward_scale * float(np.tanh(adjusted_lead / float(self.near_x)))
+
+        if self.near_bonus > 0.0 and current_world_stage == ghost_world_stage:
+            distance = abs(int(stage_x) - ghost_stage_x)
+            if distance <= self.near_x:
+                ghost_reward += self.near_bonus * (1.0 - (distance / float(self.near_x)))
+
+        if self.reward_cap > 0.0:
+            ghost_reward = float(np.clip(ghost_reward, -self.reward_cap, self.reward_cap))
+        shaped_reward = float(reward) + ghost_reward
+
+        info["ghost_index"] = int(ghost_idx)
+        info["ghost_world_stage"] = [int(ghost_world_stage[0]), int(ghost_world_stage[1])]
+        info["ghost_stage_x"] = int(ghost_stage_x)
+        info["ghost_route_progress"] = float(ghost_progress)
+        info["ghost_lead"] = float(raw_lead)
+        info["ghost_reward"] = float(ghost_reward)
+        info["ghost_trace_path"] = self.trace_path
+
+        self._prev_world_stage = current_world_stage
+        self._prev_stage_x = int(stage_x)
         return obs, shaped_reward, terminated, truncated, info
 
 
@@ -364,10 +796,12 @@ class FastClearRewardWrapper(gym.Wrapper):
 class EnvConfig:
     world: int = 1
     stage: int = 1
+    whole_game: bool = False
     frame_skip: int = 4
     frame_stack: int = 4
     screen_size: int = 84
     noop_max: int = 30
+    initial_noops_exact: int = 0
     n_envs: int = 1
     vec_backend: str = "dummy"
     end_on_flag: bool = True
@@ -384,16 +818,49 @@ class EnvConfig:
     hurdle_x: tuple[int, ...] = ()
     hurdle_bonus: float = 0.0
     time_penalty_per_step: float = 0.0
+    life_loss_penalty: float = 0.0
+    end_on_life_loss: bool = False
+    stage_clear_bonus: float = 0.0
+    progress_reward_mode: str = "delta"
+    jump_window_x_min: int = 0
+    jump_window_x_max: int = 0
+    jump_window_bonus: float = 0.0
+    airborne_window_x_min: int = 0
+    airborne_window_x_max: int = 0
+    airborne_min_y: int = 0
+    airborne_bonus: float = 0.0
+    grounded_penalty: float = 0.0
+    pipe_entry_x: int = 0
+    pipe_entry_bonus: float = 0.0
+    left_penalty_x_min: int = 0
+    left_action_penalty: float = 0.0
+    assist_action_windows: tuple[tuple[int, int, int], ...] = ()
+    hold_jump_actions_steps: int = 1
     long_jump_action: bool = False
     long_jump_hold_steps: int = 4
     long_jump_base_action: int = -1  # -1 = auto: last jump-containing action in the set
+    # After this many consecutive steps without net forward x progress, stop penalizing
+    # backward motion; optionally reward it (see backtrack_bonus_scale). Helps cages / pipes.
+    backtrack_relief_stall_steps: int = 0
+    backtrack_bonus_scale: float = 0.0
     # 0 = use STAGE_FLAG_LINE_X for (world, stage); >0 overrides (for custom ROM/layout).
     goal_line_x: int = 0
+    ghost_trace_path: str = ""
+    ghost_reward_scale: float = 0.0
+    ghost_near_bonus: float = 0.0
+    ghost_near_x: int = 64
+    ghost_lead_margin: int = 0
+    ghost_progress_stride: int = 10_000
+    ghost_reward_cap: float = 5.0
+    ghost_align_to_current_stage: bool = True
 
 
 def make_single_env(config: EnvConfig, seed: int | None = None):
     patch_super_mario_compat()
-    env = SuperMarioBrosEnv(target=(config.world, config.stage))
+    if config.whole_game:
+        env = SuperMarioBrosEnv()
+    else:
+        env = SuperMarioBrosEnv(target=(config.world, config.stage))
     actions = ACTION_SET_MAP.get(config.action_set, DEFAULT_ACTIONS)
     env = JoypadSpace(env, actions)
     env = LegacyMarioToGymnasium(env)
@@ -401,6 +868,18 @@ def make_single_env(config: EnvConfig, seed: int | None = None):
         env = NoopResetEnv(env, noop_max=config.noop_max)
     if config.frame_skip > 1:
         env = MaxAndSkipFrame(env, skip=config.frame_skip)
+    if config.initial_noops_exact > 0:
+        env = ExactNoopResetEnv(env, noop_steps=config.initial_noops_exact)
+    if config.hold_jump_actions_steps > 1:
+        env = HoldSelectedActionsWrapper(
+            env,
+            action_indices=tuple(
+                idx for idx, buttons in enumerate(actions) if "A" in buttons and "right" in buttons
+            ),
+            hold_steps=config.hold_jump_actions_steps,
+        )
+    if config.assist_action_windows:
+        env = AssistActionWindowWrapper(env, windows=config.assist_action_windows)
     if config.long_jump_action:
         if config.long_jump_base_action >= 0:
             base_idx = config.long_jump_base_action
@@ -429,8 +908,47 @@ def make_single_env(config: EnvConfig, seed: int | None = None):
         hurdle_x=config.hurdle_x,
         hurdle_bonus=config.hurdle_bonus,
         time_penalty_per_step=config.time_penalty_per_step,
+        life_loss_penalty=config.life_loss_penalty,
+        end_on_life_loss=config.end_on_life_loss,
+        stage_clear_bonus=config.stage_clear_bonus,
+        progress_reward_mode=config.progress_reward_mode,
+        jump_window_x_min=config.jump_window_x_min,
+        jump_window_x_max=config.jump_window_x_max,
+        jump_window_bonus=config.jump_window_bonus,
+        airborne_window_x_min=config.airborne_window_x_min,
+        airborne_window_x_max=config.airborne_window_x_max,
+        airborne_min_y=config.airborne_min_y,
+        airborne_bonus=config.airborne_bonus,
+        grounded_penalty=config.grounded_penalty,
+        jump_action_indices=tuple(
+            idx for idx, buttons in enumerate(actions) if "A" in buttons
+        ),
+        down_action_indices=tuple(
+            idx for idx, buttons in enumerate(actions) if "down" in buttons
+        ),
+        left_action_indices=tuple(
+            idx for idx, buttons in enumerate(actions) if "left" in buttons
+        ),
+        pipe_entry_x=config.pipe_entry_x,
+        pipe_entry_bonus=config.pipe_entry_bonus,
+        left_penalty_x_min=config.left_penalty_x_min,
+        left_action_penalty=config.left_action_penalty,
         goal_line_x=effective_goal_line_x(config),
+        backtrack_relief_stall_steps=config.backtrack_relief_stall_steps,
+        backtrack_bonus_scale=config.backtrack_bonus_scale,
     )
+    if config.ghost_trace_path:
+        env = GhostTraceRewardWrapper(
+            env,
+            trace_path=config.ghost_trace_path,
+            reward_scale=config.ghost_reward_scale,
+            near_bonus=config.ghost_near_bonus,
+            near_x=config.ghost_near_x,
+            lead_margin=config.ghost_lead_margin,
+            progress_stride=config.ghost_progress_stride,
+            reward_cap=config.ghost_reward_cap,
+            align_to_current_stage=config.ghost_align_to_current_stage,
+        )
     env = Monitor(env)
     env = WarpFrame(env, width=config.screen_size, height=config.screen_size)
     if seed is not None:
@@ -577,6 +1095,35 @@ def extract_sanitized_x_position(
     )
 
 
+def _life_count_from_info(info: dict[str, Any]) -> int | None:
+    for key in ("life", "lives"):
+        value = info.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _int_from_info(info: dict[str, Any], key: str) -> int | None:
+    value = info.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def stage_order_index(world_stage: tuple[int, int] | None) -> int:
+    if world_stage is None:
+        return 0
+    world, stage = world_stage
+    return max(0, (int(world) - 1) * 4 + int(stage))
+
+
 def build_rollout_summary(
     *,
     episodes: int,
@@ -585,17 +1132,31 @@ def build_rollout_summary(
     episode_lengths: list[int],
     episode_flags: list[bool],
     max_x_positions: list[int],
+    episode_stage_clears: list[int] | None = None,
+    episode_furthest_world_stages: list[tuple[int, int] | None] | None = None,
+    episode_final_world_stages: list[tuple[int, int] | None] | None = None,
     video_path: str | None = None,
     video_fps: int | None = None,
     video_num_frames: int | None = None,
     goal_line_x: int = LEVEL_1_1_GOAL_X,
+    episode_goal_line_xs: list[int] | None = None,
 ) -> dict[str, Any]:
     flags_cleared = sum(1 for cleared in episode_flags if cleared)
     gl = int(goal_line_x)
-    remaining_distances = [
-        0 if cleared else max(0, gl - x)
-        for x, cleared in zip(max_x_positions, episode_flags)
-    ]
+    if episode_goal_line_xs is not None:
+        remaining_distances = [
+            0 if cleared else max(0, int(goal_x) - int(x))
+            for x, cleared, goal_x in zip(
+                max_x_positions,
+                episode_flags,
+                episode_goal_line_xs,
+            )
+        ]
+    else:
+        remaining_distances = [
+            0 if cleared else max(0, gl - x)
+            for x, cleared in zip(max_x_positions, episode_flags)
+        ]
     clear_lengths = [length for length, cleared in zip(episode_lengths, episode_flags) if cleared]
     summary = {
         "goal_line_x": gl,
@@ -627,6 +1188,49 @@ def build_rollout_summary(
         "average_clear_steps": float(np.mean(clear_lengths)) if clear_lengths else None,
         "best_clear_steps": int(min(clear_lengths)) if clear_lengths else None,
     }
+    if episode_goal_line_xs is not None:
+        summary["episode_goal_line_xs"] = [int(x) for x in episode_goal_line_xs]
+    if episode_stage_clears is not None:
+        summary["episode_stage_clears"] = episode_stage_clears
+        summary["average_stage_clears"] = (
+            float(np.mean(episode_stage_clears)) if episode_stage_clears else 0.0
+        )
+        summary["best_stage_clears"] = int(max(episode_stage_clears)) if episode_stage_clears else 0
+    if episode_furthest_world_stages is not None:
+        furthest_serialized = [
+            list(ws) if ws is not None else None for ws in episode_furthest_world_stages
+        ]
+        summary["episode_furthest_world_stages"] = furthest_serialized
+        best_ws = max(
+            episode_furthest_world_stages,
+            key=stage_order_index,
+            default=None,
+        )
+        summary["best_world_stage"] = list(best_ws) if best_ws is not None else None
+        summary["best_world_stage_index"] = int(stage_order_index(best_ws))
+    if episode_final_world_stages is not None:
+        summary["episode_final_world_stages"] = [
+            list(ws) if ws is not None else None for ws in episode_final_world_stages
+        ]
+    if episode_furthest_world_stages is not None and episode_goal_line_xs is not None:
+        episode_stage_indices = [stage_order_index(ws) for ws in episode_furthest_world_stages]
+        summary["episode_world_stage_indices"] = [int(idx) for idx in episode_stage_indices]
+        if episode_stage_indices:
+            best_episode_index = max(
+                range(len(episode_stage_indices)),
+                key=lambda idx: (
+                    int(episode_stage_indices[idx]),
+                    -int(remaining_distances[idx]),
+                    int(max_x_positions[idx]),
+                    float(episode_returns[idx]) if idx < len(episode_returns) else 0.0,
+                ),
+            )
+            best_ws = episode_furthest_world_stages[best_episode_index]
+            summary["progress_best_episode_index"] = int(best_episode_index)
+            summary["best_world_stage"] = list(best_ws) if best_ws is not None else None
+            summary["best_world_stage_index"] = int(stage_order_index(best_ws))
+            summary["best_remaining_distance"] = int(remaining_distances[best_episode_index])
+            summary["best_max_x"] = int(max_x_positions[best_episode_index])
     if video_path:
         summary["video"] = video_path
     if video_fps is not None and video_num_frames is not None:
@@ -658,22 +1262,34 @@ def run_policy_preview(
     episode_returns: list[float] = []
     episode_lengths: list[int] = []
     episode_flags: list[bool] = []
+    episode_stage_clears: list[int] = []
+    episode_furthest_world_stages: list[tuple[int, int] | None] = []
+    episode_final_world_stages: list[tuple[int, int] | None] = []
+    episode_progress_goal_xs: list[int] = []
     captured_frames: list[np.ndarray] = []
     frame_stack: deque[np.ndarray] = deque(maxlen=preview_config.frame_stack)
     max_x_positions: list[int] = []
 
     for episode_idx in range(episodes):
-        obs, _ = env.reset(seed=seed + episode_idx)
+        obs, reset_info = env.reset(seed=seed + episode_idx)
         frame_stack.clear()
-        for _ in range(preview_config.frame_stack):
+        for _stack_idx in range(preview_config.frame_stack):
             frame_stack.append(obs)
 
         done = False
         episode_return = 0.0
         episode_length = 0
         episode_max_x = 0
-        episode_x_pos = 0
+        stage_clears = 0
+        current_ws = world_stage_from_info(
+            reset_info,
+            (int(preview_config.world), int(preview_config.stage)),
+        )
+        furthest_ws = current_ws
         goal_x = effective_goal_line_x(preview_config)
+        stage_x_positions: dict[tuple[int, int], int] = {}
+        stage_max_x_positions: dict[tuple[int, int], int] = {}
+        info = reset_info
         if record_video:
             captured_frames.append(render_rgb_frame(env))
 
@@ -682,29 +1298,70 @@ def run_policy_preview(
                 env.unwrapped.render(mode="human")
 
             stacked_obs = stack_observations(frame_stack)
-            action, _ = model.predict(stacked_obs, deterministic=deterministic)
+            action, _state = model.predict(stacked_obs, deterministic=deterministic)
             obs, reward, terminated, truncated, info = env.step(int(action))
             frame_stack.append(obs)
             if record_video:
                 captured_frames.append(render_rgb_frame(env))
             episode_return += float(reward)
             episode_length += 1
-            episode_x_pos = extract_sanitized_x_position(
-                info, previous_x_pos=episode_x_pos, goal_line_x=goal_x
+            current_ws = world_stage_from_info(info, current_ws)
+            stage_goal_x = goal_line_x_for_world_stage(current_ws, fallback=goal_x)
+            previous_stage_x = (
+                stage_x_positions.get(current_ws, 0)
+                if current_ws is not None
+                else 0
             )
-            episode_max_x = max(episode_max_x, episode_x_pos)
+            stage_x_pos = extract_sanitized_x_position(
+                info,
+                previous_x_pos=previous_stage_x,
+                goal_line_x=stage_goal_x,
+            )
+            if current_ws is not None:
+                stage_x_positions[current_ws] = stage_x_pos
+                stage_max_x_positions[current_ws] = max(
+                    stage_max_x_positions.get(current_ws, 0),
+                    stage_x_pos,
+                )
+            episode_max_x = max(episode_max_x, stage_x_pos)
+            if info.get("stage_clear", False):
+                stage_clears += 1
+            if stage_order_index(current_ws) > stage_order_index(furthest_ws):
+                furthest_ws = current_ws
             done = bool(terminated or truncated)
 
         episode_flags.append(bool(info.get("flag_get", False)))
 
         episode_returns.append(episode_return)
         episode_lengths.append(episode_length)
-        max_x_positions.append(episode_max_x)
+        if preview_config.whole_game:
+            progress_x = (
+                stage_max_x_positions.get(furthest_ws, 0)
+                if furthest_ws is not None
+                else 0
+            )
+            progress_goal_x = goal_line_x_for_world_stage(furthest_ws, fallback=goal_x)
+        else:
+            progress_x = episode_max_x
+            progress_goal_x = goal_x
+        max_x_positions.append(int(progress_x))
+        episode_progress_goal_xs.append(int(progress_goal_x))
+        episode_stage_clears.append(stage_clears)
+        episode_furthest_world_stages.append(furthest_ws)
+        episode_final_world_stages.append(current_ws)
 
     video_path: Path | None = None
     if record_video and captured_frames:
         video_path = output_path / "preview.mp4"
         save_video(captured_frames, video_path, fps=fps)
+
+    stage_metric_kwargs: dict[str, Any] = {}
+    if preview_config.whole_game:
+        stage_metric_kwargs = {
+            "episode_stage_clears": episode_stage_clears,
+            "episode_furthest_world_stages": episode_furthest_world_stages,
+            "episode_final_world_stages": episode_final_world_stages,
+        }
 
     summary = build_rollout_summary(
         episodes=episodes,
@@ -717,6 +1374,8 @@ def run_policy_preview(
         video_fps=fps if video_path and captured_frames else None,
         video_num_frames=len(captured_frames) if video_path and captured_frames else None,
         goal_line_x=effective_goal_line_x(preview_config),
+        episode_goal_line_xs=episode_progress_goal_xs if preview_config.whole_game else None,
+        **stage_metric_kwargs,
     )
     write_json(summary, output_path / "summary.json")
     env.close()
@@ -736,6 +1395,7 @@ class PreviewCallback(BaseCallback):
         preview_fps: int = 15,
         deterministic: bool = True,
         render_human: bool = False,
+        record_video: bool = True,
         seed: int = 123,
         start_timesteps: int = 0,
         config: EnvConfig | None = None,
@@ -749,6 +1409,7 @@ class PreviewCallback(BaseCallback):
         self.preview_fps = preview_fps
         self.deterministic = deterministic
         self.render_human = render_human
+        self.record_video = record_video
         self.seed = seed
         self.config = config
         self._next_preview = (
@@ -768,16 +1429,20 @@ class PreviewCallback(BaseCallback):
             fps=self.preview_fps,
             deterministic=self.deterministic,
             render_human=self.render_human,
+            record_video=self.record_video,
             seed=self.seed + self.num_timesteps,
             config=self.config,
         )
 
         if self.verbose > 0:
+            video = summary.get("video") or "disabled"
             print(
                 "preview_ok "
                 f"step={self.num_timesteps} "
-                f"avg_return={summary['average_return']:.2f} "
-                f"video={summary['video']}"
+                f"furthest={summary.get('best_world_stage', ['?', '?'])} "
+                f"best_remaining={summary.get('best_remaining_distance')} "
+                f"best_max_x={summary.get('best_max_x')} "
+                f"video={video}"
             )
 
         while self._next_preview <= self.num_timesteps:
@@ -786,9 +1451,19 @@ class PreviewCallback(BaseCallback):
         return True
 
 
-def evaluation_score_tuple(summary: dict[str, Any]) -> tuple[float, float, float, float]:
+def evaluation_score_tuple(summary: dict[str, Any]) -> tuple[float, ...]:
+    if "best_world_stage_index" in summary:
+        return (
+            float(summary.get("best_world_stage_index", 0.0)),
+            -float(summary.get("best_remaining_distance", float(LEVEL_1_1_GOAL_X))),
+            -float(summary.get("average_remaining_distance", float(LEVEL_1_1_GOAL_X))),
+            float(summary.get("best_max_x", 0.0)),
+            float(summary.get("average_return", 0.0)),
+        )
     return (
         float(summary.get("clear_rate", 0.0)),
+        -float(summary.get("best_remaining_distance", float(LEVEL_1_1_GOAL_X))),
+        float(summary.get("best_max_x", 0.0)),
         -float(summary.get("median_remaining_distance", float(LEVEL_1_1_GOAL_X))),
         -float(summary.get("average_remaining_distance", float(LEVEL_1_1_GOAL_X))),
         float(summary.get("average_return", 0.0)),
@@ -819,7 +1494,14 @@ class EvalCheckpointCallback(BaseCallback):
         self.deterministic = deterministic
         self.seed = seed
         self.config = config
-        self.best_score = (-float("inf"), -float("inf"), -float("inf"), -float("inf"))
+        self.best_score = (
+            -float("inf"),
+            -float("inf"),
+            -float("inf"),
+            -float("inf"),
+            -float("inf"),
+            -float("inf"),
+        )
         self._next_eval = ((start_timesteps // eval_freq) + 1) * eval_freq if eval_freq > 0 else 0
 
     def _on_step(self) -> bool:
@@ -865,8 +1547,9 @@ class EvalCheckpointCallback(BaseCallback):
             print(
                 "eval_ok "
                 f"step={self.num_timesteps} "
-                f"clear_rate={summary['clear_rate']:.2f} "
-                f"median_max_x={summary['median_max_x']:.1f} "
+                f"furthest={summary.get('best_world_stage', ['?', '?'])} "
+                f"best_remaining={summary.get('best_remaining_distance')} "
+                f"best_max_x={summary.get('best_max_x')} "
                 f"best={is_best}"
             )
 
