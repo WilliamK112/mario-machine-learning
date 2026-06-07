@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--fps", type=int, default=15)
+    parser.add_argument(
+        "--initial-noops-exact",
+        type=int,
+        default=0,
+        help="Run this many NOOP actions after reset before evaluating the policy.",
+    )
     return parser.parse_args()
 
 
@@ -45,7 +51,9 @@ def main() -> None:
     )
     config.n_envs = 1
     config.noop_max = 0
-    config.end_on_flag = True
+    config.initial_noops_exact = int(args.initial_noops_exact)
+    if config.whole_game:
+        config.end_on_flag = False
     env = make_single_env(config, seed=args.seed)
     model = PPO.load(model_path, device="cpu")
     goal_x = effective_goal_line_x(config)
@@ -106,6 +114,7 @@ def main() -> None:
         goal_line_x=goal_x,
     )
     summary["model"] = str(model_path)
+    summary["initial_noops_exact"] = int(args.initial_noops_exact)
     write_json(summary, output_dir / "summary.json")
     print(
         "eval_ok "

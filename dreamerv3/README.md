@@ -14,7 +14,8 @@ Pytorch implementation of [Mastering Diverse Domains through World Models](https
 ### Method 1: Manual
 
 Get dependencies with python 3.11:
-```
+```啊Review有人recent我认可- what地点有具尸体finish？ What是他和currentstatus？ Decidewhat同都next安定startworking哦那it。
+aAlso check mario-rl git status and push any ready changes.
 pip install -r requirements.txt
 ```
 Run training on DMC Vision:
