@@ -1,6 +1,6 @@
 # Mario Machine Learning — Two RL Algorithms, One NES Pit, Honest Numbers
 
-Built by [William Kang (Ching-Wei Kang)](https://williamkang.com/) - [portfolio and identity page](https://williamkang.com/about-william-kang.html) - [Ching-Wei Kang profile](https://williamkang.com/ching-wei-kang.html) - [projects profile](https://williamkang.com/william-kang-projects.html).
+Built by [William Kang (Ching-Wei Kang)](https://williamkang.com/) - [William Kang profile](https://williamkang.com/william-kang.html) - [portfolio and identity page](https://williamkang.com/about-william-kang.html) - [Ching-Wei Kang profile](https://williamkang.com/ching-wei-kang.html) - [projects profile](https://williamkang.com/william-kang-projects.html).
 
 > An end-to-end reinforcement-learning project on **NES Super Mario Bros 1-1**
 > that runs and compares two very different agents on a single Windows
